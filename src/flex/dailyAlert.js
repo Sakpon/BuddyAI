@@ -9,11 +9,11 @@ export function dailyAlertCard({ date, picks, summary }) {
         type: 'box',
         layout: 'horizontal',
         contents: [
-          { type: 'text', text: p.symbol, weight: 'bold', size: 'md', color: '#0F172A', flex: 2 },
+          { type: 'text', text: p.symbol || '?', weight: 'bold', size: 'md', color: '#0F172A', flex: 2 },
           { type: 'text', text: p.signal || '-', size: 'sm', color: signalColor(p.signal), align: 'end', flex: 3 },
         ],
       },
-      { type: 'text', text: p.reason || '', wrap: true, size: 'xs', color: '#475569' },
+      { type: 'text', text: p.reason || '—', wrap: true, size: 'xs', color: '#475569' },
     ],
   }));
 

@@ -153,12 +153,12 @@ function kv(k, v) {
 
 function holdingRow(h, dim) {
   const left = h.symbol || '?';
-  const qty = h.quantity != null ? `x${h.quantity}` : '';
+  const qty = h.quantity != null ? `x${h.quantity}` : '—';
   const right = h.market_value != null
     ? fmtMoney(h.market_value)
     : h.weight_pct != null
       ? `${Math.round(h.weight_pct)}%`
-      : '';
+      : '—';
   const plColor = h.unrealized_pl == null
     ? '#475569'
     : h.unrealized_pl >= 0

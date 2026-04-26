@@ -1,4 +1,9 @@
-import { askClaude, generatePicksViaClaude, generatePortfolioAnalysis } from './claude.js';
+import {
+  askClaude,
+  generatePicksViaClaude,
+  generatePortfolioAnalysis,
+  generatePortfolioRebalance,
+} from './claude.js';
 import {
   clearHistory,
   clearPortfolios,
@@ -19,7 +24,12 @@ import {
 import { enrollmentCard } from './flex/enrollment.js';
 import { dailyAlertCard } from './flex/dailyAlert.js';
 import { oilLiffCard, stockLiffCard } from './flex/liffCards.js';
-import { portfolioAnalysisCard, portfolioConfirmCard, portfolioSummaryCard } from './flex/portfolio.js';
+import {
+  portfolioAnalysisCard,
+  portfolioConfirmCard,
+  portfolioRebalanceCard,
+  portfolioSummaryCard,
+} from './flex/portfolio.js';
 import {
   getProfile,
   push,
@@ -37,6 +47,7 @@ const HELP_TH = [
   '• ส่งภาพพอร์ตจากแอปโบรกเกอร์ — ระบบจะอ่านและสรุปให้',
   '• "พอร์ต" — ดูพอร์ตล่าสุดที่บันทึกไว้',
   '• "วิเคราะห์พอร์ต" — ขอความเห็นจาก AI',
+  '• "ปรับพอร์ต" — ขอข้อเสนอการ rebalance จาก AI',
   '• "ล้างพอร์ต" — ลบข้อมูลพอร์ตทั้งหมด',
   '• "ดูหุ้น" — เปิด Stock Dashboard',
   '• "ราคาน้ำมัน" — ดูราคาน้ำมันวันนี้',
@@ -270,6 +281,9 @@ async function handleText(ev, env, userId, text) {
   if (cmd === 'analyse-portfolio') {
     return analysePortfolio(ev, env, userId);
   }
+  if (cmd === 'rebalance-portfolio') {
+    return rebalancePortfolio(ev, env, userId);
+  }
   if (cmd === 'clear-portfolio') {
     await clearPortfolios(env, userId);
     await logEvent(env, userId, 'portfolio_cleared', null);
@@ -317,6 +331,7 @@ async function handleText(ev, env, userId, text) {
     quickReply('ทำต่อได้เลยครับ', [
       { label: 'พอร์ต' },
       { label: 'วิเคราะห์พอร์ต' },
+      { label: 'ปรับพอร์ต' },
       { label: '/help' },
     ]),
   ]);
@@ -328,6 +343,39 @@ async function showPortfolio(ev, env, userId) {
     return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่บันทึกไว้ ส่งภาพหน้าจอพอร์ตจากแอปโบรกเกอร์ของคุณเพื่อเริ่มต้นได้เลยครับ'));
   }
   return reply(env, ev.replyToken, portfolioSummaryCard(active));
+}
+
+async function rebalancePortfolio(ev, env, userId) {
+  const active = await getActivePortfolio(env, userId);
+  if (!active) {
+    return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่บันทึกไว้ ส่งภาพหน้าจอพอร์ตเพื่อเริ่มต้น'));
+  }
+  await showLoading(env, userId, 30);
+  let rebalance;
+  try {
+    rebalance = await generatePortfolioRebalance(env, active.portfolio, active.holdings);
+  } catch (err) {
+    console.error('rebalance error', err);
+    await logEvent(env, userId, 'portfolio_rebalance_failed', { error: String(err?.message || err).slice(0, 200) });
+    return push(env, userId, textMsg('ขออภัยครับ ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ'));
+  }
+
+  await logEvent(env, userId, 'portfolio_rebalance', {
+    portfolio_id: active.portfolio.id,
+    summary: rebalance?.summary || null,
+    suggestions: (rebalance?.suggestions || []).map((s) => ({
+      symbol: s.symbol,
+      action: s.action,
+      current_weight_pct: s.current_weight_pct ?? null,
+      target_weight_pct: s.target_weight_pct ?? null,
+    })),
+    diversifiers: (rebalance?.diversifiers || []).map((d) => d.symbol),
+  });
+
+  if (rebalance && (rebalance.suggestions?.length || rebalance.diversifiers?.length || rebalance.summary)) {
+    return push(env, userId, portfolioRebalanceCard(rebalance));
+  }
+  return push(env, userId, textMsg(rebalance?.rationale || 'ยังไม่มีข้อเสนอที่เหมาะสม ลองใหม่อีกครั้งนะครับ'));
 }
 
 async function analysePortfolio(ev, env, userId) {
@@ -371,6 +419,7 @@ function matchCommand(text) {
   if (t === 'ยกเลิกการแจ้งเตือน') return 'unsubscribe';
   if (['พอร์ต', 'portfolio'].includes(t)) return 'portfolio';
   if (['วิเคราะห์พอร์ต', 'analyze portfolio', 'analyse portfolio'].includes(t)) return 'analyse-portfolio';
+  if (['ปรับพอร์ต', 'rebalance', 'rebalance portfolio'].includes(t)) return 'rebalance-portfolio';
   if (['ล้างพอร์ต', 'clear portfolio'].includes(t)) return 'clear-portfolio';
   return null;
 }

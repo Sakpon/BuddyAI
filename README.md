@@ -121,6 +121,7 @@ Endpoints marked *(CRON_KEY)* require an `Authorization: Bearer ${CRON_KEY}` hea
 | *(image)* | Send a portfolio screenshot → Claude vision extracts holdings → user taps **บันทึกพอร์ต** to confirm |
 | `พอร์ต` / `portfolio` | Show the saved portfolio summary card |
 | `วิเคราะห์พอร์ต` | AI commentary on diversification, sector exposure, things to watch |
+| `ปรับพอร์ต` | AI rebalance suggestions per holding (Trim/Add/Hold/Watch) + diversifier ideas |
 | `ล้างพอร์ต` | Delete all saved portfolios |
 | `ดูหุ้น` / `หุ้น` / `stock` | Open Stock Dashboard (LIFF) |
 | `ราคาน้ำมัน` / `น้ำมัน` / `oil` | Open Oil Dashboard (LIFF) |
@@ -161,6 +162,8 @@ Event types currently emitted from `src/index.js`:
 | `portfolio_cleared` | `ล้างพอร์ต` wipes saved portfolios | — |
 | `portfolio_analysis` | `วิเคราะห์พอร์ต` produced an analysis | `portfolio_id`, `verdict`, `verdict_reason`, `top_symbol`, `top_weight_pct`, `concentration`, `sector_count` |
 | `portfolio_analysis_failed` | Claude/AI Gateway error during analysis | `error` |
+| `portfolio_rebalance` | `ปรับพอร์ต` produced rebalance suggestions | `portfolio_id`, `summary`, `suggestions[{symbol,action,current/target_weight_pct}]`, `diversifiers[]` |
+| `portfolio_rebalance_failed` | Claude/AI Gateway error during rebalance | `error` |
 | `daily_alert_sent` | Daily cron pushed the card to a subscriber | `date`, `personalised`, `summary`, `picks[]` |
 | `daily_alert_failed` | Per-user push or pick-generation failed | `stage`, `error` |
 

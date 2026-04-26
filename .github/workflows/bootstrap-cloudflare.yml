@@ -1,0 +1,192 @@
+name: Bootstrap Cloudflare resources
+
+on:
+  workflow_dispatch:
+    inputs:
+      kv_name:
+        description: 'KV namespace title'
+        required: true
+        default: SESSION_KV
+      d1_name:
+        description: 'D1 database name'
+        required: true
+        default: finance-db
+      gateway_id:
+        description: 'AI Gateway ID (lowercase, no spaces)'
+        required: true
+        default: buddyai
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      KV_NAME: ${{ inputs.kv_name }}
+      D1_NAME: ${{ inputs.d1_name }}
+      GATEWAY_ID: ${{ inputs.gateway_id }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install wrangler
+        run: npm install --no-audit --no-fund
+
+      - name: Sanity-check secrets
+        run: |
+          set -eu
+          : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN secret missing}"
+          : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID secret missing}"
+          echo "secrets present"
+
+      - name: Find or create KV namespace
+        id: kv
+        run: |
+          set -euo pipefail
+          existing=$(npx wrangler kv namespace list 2>/dev/null \
+            | jq -r --arg n "$KV_NAME" '.[] | select(.title==$n) | .id' | head -1 || true)
+          if [ -n "$existing" ]; then
+            echo "Found existing KV namespace: $existing"
+            id="$existing"
+          else
+            echo "Creating KV namespace: $KV_NAME"
+            out=$(npx wrangler kv namespace create "$KV_NAME" 2>&1)
+            echo "$out"
+            id=$(echo "$out" | grep -oE 'id\s*=\s*"[a-f0-9]+"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+            if [ -z "$id" ]; then
+              echo "ERROR: could not parse KV id from wrangler output"
+              exit 1
+            fi
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "KV id: $id"
+
+      - name: Find or create D1 database
+        id: d1
+        run: |
+          set -euo pipefail
+          existing=$(npx wrangler d1 list --json 2>/dev/null \
+            | jq -r --arg n "$D1_NAME" '.[] | select(.name==$n) | .uuid' | head -1 || true)
+          if [ -n "$existing" ]; then
+            echo "Found existing D1 database: $existing"
+            id="$existing"
+          else
+            echo "Creating D1 database: $D1_NAME"
+            out=$(npx wrangler d1 create "$D1_NAME" 2>&1)
+            echo "$out"
+            id=$(echo "$out" | grep -oE 'database_id\s*=\s*"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+            if [ -z "$id" ]; then
+              echo "ERROR: could not parse D1 id from wrangler output"
+              exit 1
+            fi
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "D1 id: $id"
+
+      - name: Find or create AI Gateway
+        id: gateway
+        run: |
+          set -euo pipefail
+          api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai-gateway/gateways"
+          auth=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Content-Type: application/json")
+
+          list_resp=$(curl -fsS "${auth[@]}" "$api" || echo '{"success":false}')
+          if [ "$(echo "$list_resp" | jq -r '.success')" != "true" ]; then
+            echo "ERROR: list AI gateways failed. Token likely missing AI Gateway:Edit scope."
+            echo "Response:"
+            echo "$list_resp"
+            echo
+            echo "Fix: edit your token at https://dash.cloudflare.com/profile/api-tokens"
+            echo "and add 'AI Gateway: Edit' to the account permissions, then re-run."
+            exit 1
+          fi
+
+          existing=$(echo "$list_resp" | jq -r --arg id "$GATEWAY_ID" '.result[]? | select(.id==$id) | .id' | head -1)
+          if [ -z "$existing" ]; then
+            echo "Creating AI Gateway: $GATEWAY_ID"
+            create_body=$(jq -n --arg id "$GATEWAY_ID" '{
+              id: $id,
+              cache_invalidate_on_update: false,
+              cache_ttl: 0,
+              collect_logs: true,
+              rate_limiting_interval: 0,
+              rate_limiting_limit: 0,
+              rate_limiting_technique: "fixed"
+            }')
+            create_resp=$(curl -fsS -X POST "${auth[@]}" -d "$create_body" "$api")
+            if [ "$(echo "$create_resp" | jq -r '.success')" != "true" ]; then
+              echo "ERROR: create AI gateway failed."
+              echo "$create_resp"
+              exit 1
+            fi
+          else
+            echo "Found existing AI Gateway: $existing"
+          fi
+
+          url="https://gateway.ai.cloudflare.com/v1/${CLOUDFLARE_ACCOUNT_ID}/${GATEWAY_ID}/anthropic"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Gateway URL: $url"
+
+      - name: Patch wrangler.toml
+        env:
+          KV_ID: ${{ steps.kv.outputs.id }}
+          D1_ID: ${{ steps.d1.outputs.id }}
+          GW_URL: ${{ steps.gateway.outputs.url }}
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import os, re, sys, pathlib
+          p = pathlib.Path('wrangler.toml')
+          s = p.read_text()
+          repl = {
+              'REPLACE_WITH_KV_NAMESPACE_ID': os.environ['KV_ID'],
+              'REPLACE_WITH_D1_DATABASE_ID': os.environ['D1_ID'],
+              'REPLACE_WITH_YOUR_AI_GATEWAY_URL': os.environ['GW_URL'],
+          }
+          for placeholder, real in repl.items():
+              s = s.replace(placeholder, real)
+          p.write_text(s)
+          print("wrangler.toml updated")
+          PY
+          echo
+          echo "--- diff ---"
+          git --no-pager diff wrangler.toml || true
+
+      - name: Open PR with the IDs (or skip if no diff)
+        run: |
+          set -eu
+          if git diff --quiet wrangler.toml; then
+            echo "wrangler.toml already up-to-date — nothing to PR."
+            exit 0
+          fi
+
+          branch="bootstrap/cloudflare-ids-${{ github.run_id }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add wrangler.toml
+          git commit -m "chore: fill in Cloudflare resource IDs from bootstrap run"
+          git push -u origin "$branch"
+
+          gh pr create \
+            --title "chore: fill in Cloudflare resource IDs" \
+            --base main \
+            --head "$branch" \
+            --body "Auto-generated by .github/workflows/bootstrap-cloudflare.yml run #${{ github.run_id }}.
+
+          - KV namespace id: \`${{ steps.kv.outputs.id }}\` (\`$KV_NAME\`)
+          - D1 database id: \`${{ steps.d1.outputs.id }}\` (\`$D1_NAME\`)
+          - AI Gateway URL: \`${{ steps.gateway.outputs.url }}\`
+
+          Merge to make the next deploy pick up the real bindings."

@@ -36,13 +36,6 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install wrangler
-        run: npm install --no-audit --no-fund
-
       - name: Sanity-check secrets
         run: |
           set -eu
@@ -54,21 +47,36 @@ jobs:
         id: kv
         run: |
           set -euo pipefail
-          existing=$(npx wrangler kv namespace list 2>/dev/null \
-            | jq -r --arg n "$KV_NAME" '.[] | select(.title==$n) | .id' | head -1 || true)
-          if [ -n "$existing" ]; then
-            echo "Found existing KV namespace: $existing"
-            id="$existing"
-          else
-            echo "Creating KV namespace: $KV_NAME"
-            out=$(npx wrangler kv namespace create "$KV_NAME" 2>&1)
-            echo "$out"
-            id=$(echo "$out" | grep -oE 'id\s*=\s*"[a-f0-9]+"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-            if [ -z "$id" ]; then
-              echo "ERROR: could not parse KV id from wrangler output"
-              exit 1
+          base="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces"
+          auth=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Content-Type: application/json")
+
+          page=1
+          id=""
+          while :; do
+            resp=$(curl -sS "${auth[@]}" "${base}?per_page=100&page=${page}")
+            ok=$(echo "$resp" | jq -r '.success // false')
+            if [ "$ok" != "true" ]; then
+              echo "ERROR: KV list failed:"; echo "$resp"; exit 1
             fi
+            match=$(echo "$resp" | jq -r --arg n "$KV_NAME" '.result[]? | select(.title==$n) | .id' | head -1)
+            if [ -n "$match" ]; then id="$match"; break; fi
+            count=$(echo "$resp" | jq -r '.result | length')
+            if [ "$count" -lt 100 ]; then break; fi
+            page=$((page+1))
+          done
+
+          if [ -z "$id" ]; then
+            echo "Creating KV namespace: $KV_NAME"
+            create=$(curl -sS -X POST "${auth[@]}" -d "$(jq -n --arg t "$KV_NAME" '{title:$t}')" "$base")
+            ok=$(echo "$create" | jq -r '.success // false')
+            if [ "$ok" != "true" ]; then
+              echo "ERROR: KV create failed:"; echo "$create"; exit 1
+            fi
+            id=$(echo "$create" | jq -r '.result.id')
+          else
+            echo "Found existing KV namespace: $id"
           fi
+
           echo "id=$id" >> "$GITHUB_OUTPUT"
           echo "KV id: $id"
 
@@ -76,21 +84,36 @@ jobs:
         id: d1
         run: |
           set -euo pipefail
-          existing=$(npx wrangler d1 list --json 2>/dev/null \
-            | jq -r --arg n "$D1_NAME" '.[] | select(.name==$n) | .uuid' | head -1 || true)
-          if [ -n "$existing" ]; then
-            echo "Found existing D1 database: $existing"
-            id="$existing"
-          else
-            echo "Creating D1 database: $D1_NAME"
-            out=$(npx wrangler d1 create "$D1_NAME" 2>&1)
-            echo "$out"
-            id=$(echo "$out" | grep -oE 'database_id\s*=\s*"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-            if [ -z "$id" ]; then
-              echo "ERROR: could not parse D1 id from wrangler output"
-              exit 1
+          base="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database"
+          auth=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Content-Type: application/json")
+
+          page=1
+          id=""
+          while :; do
+            resp=$(curl -sS "${auth[@]}" "${base}?per_page=100&page=${page}")
+            ok=$(echo "$resp" | jq -r '.success // false')
+            if [ "$ok" != "true" ]; then
+              echo "ERROR: D1 list failed:"; echo "$resp"; exit 1
             fi
+            match=$(echo "$resp" | jq -r --arg n "$D1_NAME" '.result[]? | select(.name==$n) | .uuid' | head -1)
+            if [ -n "$match" ]; then id="$match"; break; fi
+            count=$(echo "$resp" | jq -r '.result | length')
+            if [ "$count" -lt 100 ]; then break; fi
+            page=$((page+1))
+          done
+
+          if [ -z "$id" ]; then
+            echo "Creating D1 database: $D1_NAME"
+            create=$(curl -sS -X POST "${auth[@]}" -d "$(jq -n --arg n "$D1_NAME" '{name:$n}')" "$base")
+            ok=$(echo "$create" | jq -r '.success // false')
+            if [ "$ok" != "true" ]; then
+              echo "ERROR: D1 create failed:"; echo "$create"; exit 1
+            fi
+            id=$(echo "$create" | jq -r '.result.uuid')
+          else
+            echo "Found existing D1 database: $id"
           fi
+
           echo "id=$id" >> "$GITHUB_OUTPUT"
           echo "D1 id: $id"
 
@@ -98,24 +121,25 @@ jobs:
         id: gateway
         run: |
           set -euo pipefail
-          api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai-gateway/gateways"
+          base="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai-gateway/gateways"
           auth=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Content-Type: application/json")
 
-          list_resp=$(curl -fsS "${auth[@]}" "$api" || echo '{"success":false}')
-          if [ "$(echo "$list_resp" | jq -r '.success')" != "true" ]; then
-            echo "ERROR: list AI gateways failed. Token likely missing AI Gateway:Edit scope."
-            echo "Response:"
-            echo "$list_resp"
+          resp=$(curl -sS "${auth[@]}" "$base")
+          ok=$(echo "$resp" | jq -r '.success // false')
+          if [ "$ok" != "true" ]; then
+            echo "ERROR: list AI gateways failed."
+            echo "$resp"
             echo
+            echo "Most likely cause: token missing 'AI Gateway: Edit' scope."
             echo "Fix: edit your token at https://dash.cloudflare.com/profile/api-tokens"
-            echo "and add 'AI Gateway: Edit' to the account permissions, then re-run."
+            echo "and add the 'AI Gateway: Edit' account permission, then re-run."
             exit 1
           fi
 
-          existing=$(echo "$list_resp" | jq -r --arg id "$GATEWAY_ID" '.result[]? | select(.id==$id) | .id' | head -1)
+          existing=$(echo "$resp" | jq -r --arg id "$GATEWAY_ID" '.result[]? | select(.id==$id) | .id' | head -1)
           if [ -z "$existing" ]; then
             echo "Creating AI Gateway: $GATEWAY_ID"
-            create_body=$(jq -n --arg id "$GATEWAY_ID" '{
+            body=$(jq -n --arg id "$GATEWAY_ID" '{
               id: $id,
               cache_invalidate_on_update: false,
               cache_ttl: 0,
@@ -124,11 +148,10 @@ jobs:
               rate_limiting_limit: 0,
               rate_limiting_technique: "fixed"
             }')
-            create_resp=$(curl -fsS -X POST "${auth[@]}" -d "$create_body" "$api")
-            if [ "$(echo "$create_resp" | jq -r '.success')" != "true" ]; then
-              echo "ERROR: create AI gateway failed."
-              echo "$create_resp"
-              exit 1
+            create=$(curl -sS -X POST "${auth[@]}" -d "$body" "$base")
+            ok=$(echo "$create" | jq -r '.success // false')
+            if [ "$ok" != "true" ]; then
+              echo "ERROR: AI gateway create failed:"; echo "$create"; exit 1
             fi
           else
             echo "Found existing AI Gateway: $existing"
@@ -146,7 +169,7 @@ jobs:
         run: |
           set -eu
           python3 - <<'PY'
-          import os, re, sys, pathlib
+          import os, pathlib
           p = pathlib.Path('wrangler.toml')
           s = p.read_text()
           repl = {

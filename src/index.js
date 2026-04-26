@@ -1,4 +1,4 @@
-import { askClaude, generatePicksViaClaude, generatePortfolioCommentary } from './claude.js';
+import { askClaude, generatePicksViaClaude, generatePortfolioAnalysis } from './claude.js';
 import {
   clearHistory,
   clearPortfolios,
@@ -17,7 +17,7 @@ import {
 import { enrollmentCard } from './flex/enrollment.js';
 import { dailyAlertCard } from './flex/dailyAlert.js';
 import { oilLiffCard, stockLiffCard } from './flex/liffCards.js';
-import { portfolioConfirmCard, portfolioSummaryCard } from './flex/portfolio.js';
+import { portfolioAnalysisCard, portfolioConfirmCard, portfolioSummaryCard } from './flex/portfolio.js';
 import {
   getProfile,
   push,
@@ -300,14 +300,18 @@ async function analysePortfolio(ev, env, userId) {
     return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่บันทึกไว้ ส่งภาพหน้าจอพอร์ตเพื่อเริ่มต้น'));
   }
   await showLoading(env, userId, 25);
-  let commentary;
+  let analysis;
   try {
-    commentary = await generatePortfolioCommentary(env, active.portfolio, active.holdings);
+    analysis = await generatePortfolioAnalysis(env, active.portfolio, active.holdings);
   } catch (err) {
     console.error('analyse error', err);
-    commentary = 'ขออภัยครับ ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ';
+    return push(env, userId, textMsg('ขออภัยครับ ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ'));
   }
-  await push(env, userId, textMsg(commentary));
+
+  if (analysis && (analysis.verdict || analysis.metrics || analysis.observations)) {
+    return push(env, userId, portfolioAnalysisCard(analysis));
+  }
+  return push(env, userId, textMsg(analysis?.verdict_reason || 'วิเคราะห์ไม่สำเร็จ ลองใหม่อีกครั้งนะครับ'));
 }
 
 function matchCommand(text) {

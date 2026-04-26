@@ -188,3 +188,175 @@ function fmtMoney(n) {
   if (!Number.isFinite(v)) return String(n);
   return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
+
+const VERDICT_TONE = {
+  Healthy:       { color: '#16A34A', label: 'พอร์ตสุขภาพดี' },
+  Watch:         { color: '#D97706', label: 'ควรเฝ้าดู' },
+  Concentrated:  { color: '#DC2626', label: 'กระจุกตัวสูง' },
+};
+
+const CONCENTRATION_TONE = {
+  low:    { color: '#16A34A', label: 'ต่ำ' },
+  medium: { color: '#D97706', label: 'ปานกลาง' },
+  high:   { color: '#DC2626', label: 'สูง' },
+};
+
+export function portfolioAnalysisCard(analysis) {
+  const verdict = analysis.verdict || 'Watch';
+  const tone = VERDICT_TONE[verdict] || VERDICT_TONE.Watch;
+  const m = analysis.metrics || {};
+  const conc = CONCENTRATION_TONE[m.concentration] || CONCENTRATION_TONE.medium;
+  const sectors = (analysis.sectors || []).slice(0, 5);
+  const observations = (analysis.observations || []).slice(0, 4);
+  const watch = (analysis.watch || []).slice(0, 3);
+
+  const body = [
+    {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: tone.color + '14',
+      cornerRadius: '8px',
+      paddingAll: '12px',
+      spacing: 'xs',
+      contents: [
+        {
+          type: 'box',
+          layout: 'horizontal',
+          contents: [
+            { type: 'text', text: tone.label, weight: 'bold', size: 'md', color: tone.color, flex: 3 },
+            { type: 'text', text: verdict, size: 'xs', color: tone.color, align: 'end', flex: 2 },
+          ],
+        },
+        ...(analysis.verdict_reason
+          ? [{ type: 'text', text: analysis.verdict_reason, wrap: true, size: 'xs', color: '#475569' }]
+          : []),
+      ],
+    },
+  ];
+
+  const metricItems = [];
+  if (m.top_symbol) {
+    metricItems.push(
+      metricBox(
+        'หุ้นน้ำหนักสูงสุด',
+        `${m.top_symbol}${m.top_weight_pct != null ? ` · ${Math.round(m.top_weight_pct)}%` : ''}`,
+        '#0F172A',
+      ),
+    );
+  }
+  if (m.sector_count != null) {
+    metricItems.push(metricBox('จำนวนกลุ่ม', String(m.sector_count), '#0F172A'));
+  }
+  metricItems.push(metricBox('ความเสี่ยงกระจุกตัว', conc.label, conc.color));
+
+  body.push({
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'sm',
+    margin: 'md',
+    contents: metricItems,
+  });
+
+  if (sectors.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'กลุ่มอุตสาหกรรม', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    for (const s of sectors) {
+      body.push(sectorRow(s));
+    }
+  }
+
+  if (observations.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'ข้อสังเกต', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    for (const o of observations) {
+      body.push({ type: 'text', text: '• ' + o, wrap: true, size: 'xs', color: '#1E293B' });
+    }
+  }
+
+  if (watch.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'ควรเฝ้าดู', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    for (const w of watch) {
+      body.push({ type: 'text', text: '• ' + w, wrap: true, size: 'xs', color: '#1E293B' });
+    }
+  }
+
+  return {
+    type: 'flex',
+    altText: 'วิเคราะห์พอร์ต',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: hero('วิเคราะห์พอร์ต', tone.label),
+      body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'text',
+            text: 'ข้อมูลเชิงการศึกษา ไม่ใช่คำแนะนำการลงทุน',
+            size: 'xxs',
+            color: '#94A3B8',
+            align: 'center',
+            wrap: true,
+          },
+        ],
+      },
+    },
+  };
+}
+
+function metricBox(label, value, valueColor) {
+  return {
+    type: 'box',
+    layout: 'horizontal',
+    contents: [
+      { type: 'text', text: label, size: 'sm', color: '#475569', flex: 3 },
+      { type: 'text', text: value || '—', size: 'sm', weight: 'bold', color: valueColor || '#0F172A', align: 'end', flex: 2 },
+    ],
+  };
+}
+
+function sectorRow(s) {
+  const name = s.name || '?';
+  const pct = s.weight_pct != null ? `${Math.round(s.weight_pct)}%` : '—';
+  const widthPct = s.weight_pct != null ? Math.max(2, Math.min(100, Math.round(s.weight_pct))) : 0;
+  const bar = widthPct > 0
+    ? {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#E2E8F0',
+        height: '4px',
+        margin: 'xs',
+        cornerRadius: '2px',
+        contents: [
+          {
+            type: 'box',
+            layout: 'vertical',
+            backgroundColor: '#0EA5E9',
+            width: `${widthPct}%`,
+            height: '4px',
+            cornerRadius: '2px',
+            contents: [{ type: 'filler' }],
+          },
+        ],
+      }
+    : null;
+  return {
+    type: 'box',
+    layout: 'vertical',
+    margin: 'sm',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: name, size: 'xs', color: '#1E293B', flex: 5 },
+          { type: 'text', text: pct, size: 'xs', color: '#475569', align: 'end', flex: 2 },
+        ],
+      },
+      ...(bar ? [bar] : []),
+    ],
+  };
+}

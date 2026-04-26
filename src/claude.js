@@ -45,23 +45,37 @@ export async function askClaude(messages, env, opts = {}) {
   return out || 'ขออภัย ตอนนี้ระบบยังตอบไม่ได้ ลองใหม่อีกครั้งนะครับ';
 }
 
-export async function generatePortfolioCommentary(env, portfolio, holdings) {
+export async function generatePortfolioAnalysis(env, portfolio, holdings) {
   const summary = portfolioToText(portfolio, holdings);
   const prompt = [
     {
       role: 'user',
       content:
-        'นี่คือพอร์ตของผู้ใช้ที่ confirmed ไว้:\n\n' +
+        'วิเคราะห์พอร์ตนี้และตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่น:\n\n' +
         summary +
-        '\n\nช่วยวิเคราะห์ในมุม:\n' +
-        '1) การกระจายความเสี่ยง (มีตัวไหนน้ำหนักเกินไปไหม)\n' +
-        '2) ภาคอุตสาหกรรมที่ผู้ใช้ลงทุนหนักที่สุด\n' +
-        '3) ข้อสังเกตเชิงปัจจัยพื้นฐานหรือมหภาคที่อาจกระทบ (ทั่วไป ไม่ต้องราคาเรียลไทม์)\n' +
-        '4) แนวคิดสำหรับ "เฝ้าดู" ไม่ใช่คำสั่งซื้อขาย\n' +
-        'ตอบสั้น 4-6 bullet ภาษาไทย ใช้ • นำหน้าทุกข้อ',
+        '\n\nรูปแบบ:\n' +
+        '{\n' +
+        '  "verdict": "Healthy" | "Watch" | "Concentrated",\n' +
+        '  "verdict_reason": "<1 ประโยคภาษาไทย สรุปทำไมถึงให้ verdict นี้>",\n' +
+        '  "metrics": {\n' +
+        '    "top_symbol": "<ตัวที่หนักที่สุด>",\n' +
+        '    "top_weight_pct": <ตัวเลข % โดยประมาณ ถ้าไม่มี weight_pct ในข้อมูล ให้คำนวณจาก market_value/total_value>,\n' +
+        '    "sector_count": <จำนวน sector คร่าวๆ>,\n' +
+        '    "concentration": "low" | "medium" | "high"\n' +
+        '  },\n' +
+        '  "sectors": [ { "name": "<กลุ่ม เช่น ธนาคาร พลังงาน เทคโนโลยี>", "weight_pct": <ตัวเลข> } ],\n' +
+        '  "observations": [ "<ข้อสังเกต 3-4 ข้อ>" ],\n' +
+        '  "watch": [ "<สิ่งที่ควรเฝ้าดู 1-3 ข้อ>" ]\n' +
+        '}\n\n' +
+        'กฎ:\n' +
+        '- ภาษาไทยทั้งหมด ยกเว้น verdict (Healthy/Watch/Concentrated) และ concentration (low/medium/high)\n' +
+        '- ห้ามแนะนำ "ซื้อ/ขาย" ใช้สำนวนเชิงข้อมูล/ความเสี่ยง\n' +
+        '- weight_pct เป็นตัวเลข ไม่ใช่ string\n' +
+        '- ถ้าไม่ทราบ sector จริง ให้เดาจากชื่อ symbol อย่างสมเหตุสมผล',
     },
   ];
-  return askClaude(prompt, env, { maxTokens: 700 });
+  const raw = await askClaude(prompt, env, { maxTokens: 900 });
+  return parseJsonLoose(raw) || { verdict_reason: raw.slice(0, 400) };
 }
 
 export async function generatePicksViaClaude(env, holdings) {

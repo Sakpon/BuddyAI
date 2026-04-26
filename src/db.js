@@ -62,3 +62,110 @@ export async function getSubscribedUsers(env) {
   ).all();
   return (results || []).map((r) => r.user_id);
 }
+
+const PENDING_PREFIX = 'pending-portfolio:';
+const PENDING_TTL = 60 * 30;
+
+export async function savePendingPortfolio(env, userId, extracted) {
+  await env.SESSION_KV.put(
+    PENDING_PREFIX + userId,
+    JSON.stringify(extracted),
+    { expirationTtl: PENDING_TTL },
+  );
+}
+
+export async function getPendingPortfolio(env, userId) {
+  const raw = await env.SESSION_KV.get(PENDING_PREFIX + userId);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export async function deletePendingPortfolio(env, userId) {
+  await env.SESSION_KV.delete(PENDING_PREFIX + userId);
+}
+
+export async function confirmPendingPortfolio(env, userId) {
+  const pending = await getPendingPortfolio(env, userId);
+  if (!pending) return null;
+  const portfolioId = await insertPortfolio(env, userId, pending);
+  await deletePendingPortfolio(env, userId);
+  return portfolioId;
+}
+
+async function insertPortfolio(env, userId, p) {
+  const stmt = env.DB.prepare(
+    `INSERT INTO portfolios (user_id, source, total_value, cash, notes)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).bind(
+    userId,
+    p.source || null,
+    numOrNull(p.total_value),
+    numOrNull(p.cash),
+    p.warnings && p.warnings.length ? JSON.stringify(p.warnings) : null,
+  );
+  const { meta } = await stmt.run();
+  const portfolioId = meta?.last_row_id;
+  if (!portfolioId) throw new Error('insertPortfolio: no last_row_id');
+
+  const holdings = Array.isArray(p.holdings) ? p.holdings : [];
+  for (const h of holdings) {
+    if (!h || !h.symbol) continue;
+    await env.DB.prepare(
+      `INSERT INTO holdings
+        (portfolio_id, symbol, quantity, avg_cost, market_price,
+         market_value, unrealized_pl, weight_pct)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        portfolioId,
+        String(h.symbol).toUpperCase(),
+        numOrNull(h.quantity),
+        numOrNull(h.avg_cost),
+        numOrNull(h.market_price),
+        numOrNull(h.market_value),
+        numOrNull(h.unrealized_pl),
+        numOrNull(h.weight_pct),
+      )
+      .run();
+  }
+  return portfolioId;
+}
+
+export async function getActivePortfolio(env, userId) {
+  const portfolio = await env.DB.prepare(
+    `SELECT id, source, total_value, cash, notes, taken_at
+       FROM portfolios
+      WHERE user_id = ?
+      ORDER BY taken_at DESC, id DESC
+      LIMIT 1`,
+  )
+    .bind(userId)
+    .first();
+  if (!portfolio) return null;
+  const { results } = await env.DB.prepare(
+    `SELECT symbol, quantity, avg_cost, market_price, market_value,
+            unrealized_pl, weight_pct
+       FROM holdings
+      WHERE portfolio_id = ?`,
+  )
+    .bind(portfolio.id)
+    .all();
+  return { portfolio, holdings: results || [] };
+}
+
+export async function clearPortfolios(env, userId) {
+  await env.DB.prepare(`DELETE FROM portfolios WHERE user_id = ?`)
+    .bind(userId)
+    .run();
+  await deletePendingPortfolio(env, userId);
+}
+
+function numOrNull(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = typeof v === 'number' ? v : Number(String(v).replace(/,/g, ''));
+  return Number.isFinite(n) ? n : null;
+}

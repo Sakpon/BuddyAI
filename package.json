@@ -9,8 +9,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "db:init": "wrangler d1 execute finance-db --local --file=migrations/0001_init.sql && wrangler d1 execute finance-db --local --file=migrations/0002_add_alert_subscribed.sql",
-    "db:init:remote": "wrangler d1 execute finance-db --remote --file=migrations/0001_init.sql && wrangler d1 execute finance-db --remote --file=migrations/0002_add_alert_subscribed.sql",
+    "db:init": "wrangler d1 execute finance-db --local --file=migrations/0001_init.sql && wrangler d1 execute finance-db --local --file=migrations/0002_add_alert_subscribed.sql && wrangler d1 execute finance-db --local --file=migrations/0003_portfolios.sql",
+    "db:init:remote": "wrangler d1 execute finance-db --remote --file=migrations/0001_init.sql && wrangler d1 execute finance-db --remote --file=migrations/0002_add_alert_subscribed.sql && wrangler d1 execute finance-db --remote --file=migrations/0003_portfolios.sql",
     "db:migrate": "wrangler d1 migrations apply finance-db --remote",
     "test": "node --test tests/"
   },

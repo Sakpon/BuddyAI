@@ -2,7 +2,10 @@
 
 Thai personal-finance LINE bot on Cloudflare Workers, powered by Claude Haiku 4.5
 via Cloudflare AI Gateway. Single Worker handles the LINE webhook plus a daily
-cron that pushes a stock-pick alert to subscribers.
+cron that pushes a stock-pick alert to subscribers. Users can also send a
+screenshot of their broker portfolio — the bot extracts holdings via Claude
+vision, asks for a one-tap confirmation, and from then on personalises chat
+context and the daily alert to that portfolio.
 
 ## Stack
 
@@ -17,14 +20,15 @@ cron that pushes a stock-pick alert to subscribers.
 ```
 buddyAI/
 ├── .github/workflows/    # deploy, preview, db-migrate
-├── migrations/           # 0001_init.sql, 0002_add_alert_subscribed.sql
+├── migrations/           # 0001_init, 0002_add_alert_subscribed, 0003_portfolios
 ├── src/
 │   ├── index.js          # Worker entry, routes, event router, cron
 │   ├── line.js           # LINE API helpers + signature verify
 │   ├── claude.js         # AI Gateway / Anthropic call
-│   ├── db.js             # D1 ops
+│   ├── vision.js         # LINE image fetch + Claude vision portfolio extraction
+│   ├── db.js             # D1 ops (chat, alerts, portfolios)
 │   ├── session.js        # KV session helpers
-│   └── flex/             # Flex card builders
+│   └── flex/             # Flex card builders (incl. portfolio confirm/summary)
 ├── wrangler.toml         # bindings + vars (no secrets)
 ├── package.json
 └── .dev.vars.example     # local secrets template
@@ -98,20 +102,33 @@ migration is added.
 
 | User input | Action |
 |---|---|
+| *(image)* | Send a portfolio screenshot → Claude vision extracts holdings → user taps **บันทึกพอร์ต** to confirm |
+| `พอร์ต` / `portfolio` | Show the saved portfolio summary card |
+| `วิเคราะห์พอร์ต` | AI commentary on diversification, sector exposure, things to watch |
+| `ล้างพอร์ต` | Delete all saved portfolios |
 | `ดูหุ้น` / `หุ้น` / `stock` | Open Stock Dashboard (LIFF) |
 | `ราคาน้ำมัน` / `น้ำมัน` / `oil` | Open Oil Dashboard (LIFF) |
-| `สมัครการแจ้งเตือน` | Subscribe to daily alert |
+| `สมัครการแจ้งเตือน` | Subscribe to daily alert (becomes portfolio-aware once a portfolio is saved) |
 | `ยกเลิกการแจ้งเตือน` | Unsubscribe |
 | `/reset` | Clear chat history |
 | `/help` | Show command menu |
-| anything else | Free-form chat → Claude (last 12 messages of context) |
+| anything else | Free-form chat → Claude (last 12 messages of context, plus held symbols if a portfolio is saved) |
+
+## Portfolio flow
+
+1. User sends an image. The Worker downloads it from `api-data.line.me`, base64-encodes it, and asks Claude (Haiku 4.5 vision) to return a structured `{ source, total_value, cash, holdings[], warnings[] }`.
+2. The extraction is stored in **KV** with a 30-minute TTL (`pending-portfolio:<userId>`). The image bytes are **discarded immediately**.
+3. The bot replies with a Flex card showing each holding and two buttons: **บันทึกพอร์ต** (confirm) or **อ่านใหม่** (cancel).
+4. On confirm, the pending blob is promoted into the D1 `portfolios` + `holdings` tables; the KV entry is deleted.
+5. From then on, free-form chat passes held symbols as context, and the daily alert generates personalised picks per user.
 
 ## Migration notes from finance-line-bot
 
 - `schema.sql` is split into `migrations/0001_init.sql` +
   `migrations/0002_add_alert_subscribed.sql` (the missing column the previous
-  `db.js` relied on).
+  `db.js` relied on) + `migrations/0003_portfolios.sql` for the new portfolio
+  feature.
 - Previously hardcoded URLs (`STOCK_API`, the two LIFF URLs) are now
   `[vars]` in `wrangler.toml` so a cloned bot can repoint without code edits.
 - Flex card builders are extracted to `src/flex/` (enrollment, dailyAlert,
-  liffCards) instead of living in `index.js`.
+  liffCards, portfolio) instead of living in `index.js`.

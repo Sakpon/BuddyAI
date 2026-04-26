@@ -360,3 +360,136 @@ function sectorRow(s) {
     ],
   };
 }
+
+const ACTION_TONE = {
+  Trim:  { color: '#DC2626', label: 'ลดน้ำหนัก' },
+  Add:   { color: '#16A34A', label: 'ทยอยเพิ่ม' },
+  Hold:  { color: '#0EA5E9', label: 'ถือ' },
+  Watch: { color: '#D97706', label: 'เฝ้าดู' },
+};
+
+export function portfolioRebalanceCard(rebalance) {
+  const suggestions = (rebalance.suggestions || []).slice(0, 8);
+  const diversifiers = (rebalance.diversifiers || []).slice(0, 3);
+  const risks = (rebalance.risk_notes || []).slice(0, 3);
+
+  const body = [];
+
+  if (rebalance.summary) {
+    body.push({
+      type: 'text',
+      text: rebalance.summary,
+      wrap: true,
+      weight: 'bold',
+      size: 'sm',
+      color: '#0F172A',
+    });
+  }
+  if (rebalance.rationale) {
+    body.push({
+      type: 'text',
+      text: rebalance.rationale,
+      wrap: true,
+      size: 'xs',
+      color: '#475569',
+    });
+  }
+
+  if (suggestions.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'แนะนำต่อตัว', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    for (const s of suggestions) body.push(rebalanceRow(s));
+  }
+
+  if (diversifiers.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'หุ้นช่วยกระจายความเสี่ยง', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    for (const d of diversifiers) {
+      body.push({
+        type: 'box',
+        layout: 'vertical',
+        margin: 'sm',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: d.symbol || '?', size: 'sm', weight: 'bold', color: '#0F172A', flex: 2 },
+              { type: 'text', text: d.sector || '—', size: 'xs', color: '#475569', align: 'end', flex: 3 },
+            ],
+          },
+          ...(d.reason
+            ? [{ type: 'text', text: d.reason, wrap: true, size: 'xs', color: '#475569' }]
+            : []),
+        ],
+      });
+    }
+  }
+
+  if (risks.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'ข้อควรระวัง', weight: 'bold', size: 'sm', color: '#DC2626', margin: 'md' });
+    for (const r of risks) {
+      body.push({ type: 'text', text: '• ' + r, wrap: true, size: 'xs', color: '#DC2626' });
+    }
+  }
+
+  return {
+    type: 'flex',
+    altText: 'แนะนำการปรับพอร์ต',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: hero('ปรับพอร์ต', rebalance.summary || 'ข้อเสนอจาก AI'),
+      body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'text',
+            text: 'ข้อมูลเชิงการศึกษา ไม่ใช่คำแนะนำการลงทุน · ตัดสินใจด้วยตนเองทุกครั้ง',
+            size: 'xxs',
+            color: '#94A3B8',
+            align: 'center',
+            wrap: true,
+          },
+        ],
+      },
+    },
+  };
+}
+
+function rebalanceRow(s) {
+  const tone = ACTION_TONE[s.action] || ACTION_TONE.Watch;
+  const symbol = s.symbol || '?';
+  const cur = s.current_weight_pct != null ? `${Math.round(s.current_weight_pct)}%` : '—';
+  const tgt = s.target_weight_pct != null ? `${Math.round(s.target_weight_pct)}%` : '—';
+  return {
+    type: 'box',
+    layout: 'vertical',
+    margin: 'sm',
+    spacing: 'xs',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: symbol, size: 'sm', weight: 'bold', color: '#0F172A', flex: 3 },
+          { type: 'text', text: tone.label, size: 'xs', weight: 'bold', color: tone.color, align: 'end', flex: 3 },
+        ],
+      },
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: `ปัจจุบัน ${cur}`, size: 'xxs', color: '#94A3B8', flex: 3 },
+          { type: 'text', text: `เป้าหมาย ${tgt}`, size: 'xxs', color: tone.color, align: 'end', flex: 3 },
+        ],
+      },
+      ...(s.reason
+        ? [{ type: 'text', text: s.reason, wrap: true, size: 'xs', color: '#1E293B' }]
+        : []),
+    ],
+  };
+}

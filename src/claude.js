@@ -78,6 +78,44 @@ export async function generatePortfolioAnalysis(env, portfolio, holdings) {
   return parseJsonLoose(raw) || { verdict_reason: raw.slice(0, 400) };
 }
 
+export async function generatePortfolioRebalance(env, portfolio, holdings) {
+  const summary = portfolioToText(portfolio, holdings);
+  const prompt = [
+    {
+      role: 'user',
+      content:
+        'ดูพอร์ตนี้แล้วเสนอการ "ปรับพอร์ต" ตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่น:\n\n' +
+        summary +
+        '\n\nรูปแบบ:\n' +
+        '{\n' +
+        '  "summary": "<1 ประโยคสรุปทิศทางการปรับ>",\n' +
+        '  "rationale": "<1-2 ประโยค ทำไมถึงควรปรับตอนนี้>",\n' +
+        '  "suggestions": [\n' +
+        '    {\n' +
+        '      "symbol": "<หุ้นที่ผู้ใช้มีอยู่>",\n' +
+        '      "action": "Trim" | "Add" | "Hold" | "Watch",\n' +
+        '      "current_weight_pct": <ตัวเลข % โดยประมาณ>,\n' +
+        '      "target_weight_pct": <ตัวเลข % โดยประมาณ ถ้า action เป็น Hold/Watch ใส่ค่าเดิม>,\n' +
+        '      "reason": "<เหตุผลสั้น 1 ประโยค>"\n' +
+        '    }\n' +
+        '  ],\n' +
+        '  "diversifiers": [\n' +
+        '    { "symbol": "<หุ้นใหม่ที่ช่วยกระจายความเสี่ยง>", "sector": "<กลุ่ม>", "reason": "<สั้น>" }\n' +
+        '  ],\n' +
+        '  "risk_notes": [ "<ข้อควรระวัง 1-3 ข้อ>" ]\n' +
+        '}\n\n' +
+        'กฎ:\n' +
+        '- ภาษาไทย ยกเว้น action (Trim/Add/Hold/Watch)\n' +
+        '- suggestions เน้นหุ้นที่ผู้ใช้ "มีอยู่แล้ว" (3-6 รายการ)\n' +
+        '- diversifiers 1-3 รายการ เป็นหุ้นไทยที่ผู้ใช้ "ยังไม่มี"\n' +
+        '- ใช้สำนวนเชิงพิจารณา ไม่ใช่คำสั่ง ("ลดน้ำหนัก", "ทยอยเพิ่ม", "เฝ้าดู") ห้ามพูด "ต้องซื้อ/ขาย"\n' +
+        '- ตัวเลข weight เป็น number ไม่ใช่ string',
+    },
+  ];
+  const raw = await askClaude(prompt, env, { maxTokens: 1100 });
+  return parseJsonLoose(raw) || { rationale: raw.slice(0, 400) };
+}
+
 export async function generatePicksViaClaude(env, holdings) {
   const portfolioContext = holdings && holdings.length
     ? `ผู้ใช้ถือหุ้นเหล่านี้อยู่: ${holdings

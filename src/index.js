@@ -372,10 +372,10 @@ async function rebalancePortfolio(ev, env, userId) {
     diversifiers: (rebalance?.diversifiers || []).map((d) => d.symbol),
   });
 
-  if (rebalance && (rebalance.suggestions?.length || rebalance.diversifiers?.length || rebalance.summary)) {
+  if (rebalance && (rebalance.suggestions?.length || rebalance.diversifiers?.length)) {
     return push(env, userId, portfolioRebalanceCard(rebalance));
   }
-  return push(env, userId, textMsg(rebalance?.rationale || 'ยังไม่มีข้อเสนอที่เหมาะสม ลองใหม่อีกครั้งนะครับ'));
+  return push(env, userId, textMsg('ขออภัยครับ ระบบประมวลผลข้อเสนอไม่สำเร็จ ลองใหม่อีกครั้งนะครับ'));
 }
 
 async function analysePortfolio(ev, env, userId) {
@@ -406,7 +406,7 @@ async function analysePortfolio(ev, env, userId) {
   if (analysis && (analysis.verdict || analysis.metrics || analysis.observations)) {
     return push(env, userId, portfolioAnalysisCard(analysis));
   }
-  return push(env, userId, textMsg(analysis?.verdict_reason || 'วิเคราะห์ไม่สำเร็จ ลองใหม่อีกครั้งนะครับ'));
+  return push(env, userId, textMsg('ขออภัยครับ ระบบประมวลผลการวิเคราะห์ไม่สำเร็จ ลองใหม่อีกครั้งนะครับ'));
 }
 
 function matchCommand(text) {

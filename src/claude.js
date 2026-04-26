@@ -74,8 +74,8 @@ export async function generatePortfolioAnalysis(env, portfolio, holdings) {
         '- ถ้าไม่ทราบ sector จริง ให้เดาจากชื่อ symbol อย่างสมเหตุสมผล',
     },
   ];
-  const raw = await askClaude(prompt, env, { maxTokens: 900 });
-  return parseJsonLoose(raw) || { verdict_reason: raw.slice(0, 400) };
+  const raw = await askClaude(prompt, env, { maxTokens: 1500 });
+  return parseJsonLoose(raw);
 }
 
 export async function generatePortfolioRebalance(env, portfolio, holdings) {
@@ -106,14 +106,16 @@ export async function generatePortfolioRebalance(env, portfolio, holdings) {
         '}\n\n' +
         'กฎ:\n' +
         '- ภาษาไทย ยกเว้น action (Trim/Add/Hold/Watch)\n' +
-        '- suggestions เน้นหุ้นที่ผู้ใช้ "มีอยู่แล้ว" (3-6 รายการ)\n' +
-        '- diversifiers 1-3 รายการ เป็นหุ้นไทยที่ผู้ใช้ "ยังไม่มี"\n' +
+        '- suggestions เน้นหุ้นที่ผู้ใช้ "มีอยู่แล้ว" (สูงสุด 4 รายการ)\n' +
+        '- diversifiers 1-2 รายการ เป็นหุ้นไทยที่ผู้ใช้ "ยังไม่มี"\n' +
+        '- risk_notes 1-2 ข้อ\n' +
         '- ใช้สำนวนเชิงพิจารณา ไม่ใช่คำสั่ง ("ลดน้ำหนัก", "ทยอยเพิ่ม", "เฝ้าดู") ห้ามพูด "ต้องซื้อ/ขาย"\n' +
-        '- ตัวเลข weight เป็น number ไม่ใช่ string',
+        '- ตัวเลข weight เป็น number ไม่ใช่ string\n' +
+        '- ตอบให้สั้นกระชับ ไม่เกิน 1500 tokens',
     },
   ];
-  const raw = await askClaude(prompt, env, { maxTokens: 1100 });
-  return parseJsonLoose(raw) || { rationale: raw.slice(0, 400) };
+  const raw = await askClaude(prompt, env, { maxTokens: 2000 });
+  return parseJsonLoose(raw);
 }
 
 export async function generatePicksViaClaude(env, holdings) {
@@ -133,8 +135,8 @@ export async function generatePicksViaClaude(env, holdings) {
         'ใช้ข้อมูลพื้นฐาน/ปัจจัยมหภาคทั่วไป ไม่ใช้ราคาเรียลไทม์',
     },
   ];
-  const raw = await askClaude(prompt, env, { maxTokens: 800 });
-  return parseJsonLoose(raw) || { summary: raw.slice(0, 200), picks: [] };
+  const raw = await askClaude(prompt, env, { maxTokens: 1000 });
+  return parseJsonLoose(raw) || { summary: '', picks: [] };
 }
 
 function portfolioToText(portfolio, holdings) {
@@ -157,7 +159,9 @@ function portfolioToText(portfolio, holdings) {
 
 function parseJsonLoose(text) {
   if (!text) return null;
-  const m = text.match(/\{[\s\S]*\}/);
+  // Strip ```json ... ``` fences if present.
+  const cleaned = text.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '');
+  const m = cleaned.match(/\{[\s\S]*\}/);
   if (!m) return null;
   try {
     return JSON.parse(m[0]);

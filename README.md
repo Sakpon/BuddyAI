@@ -13,7 +13,7 @@ context and the daily alert to that portfolio.
 - **DB:** Cloudflare D1 (`finance-db`) — `users`, `messages`
 - **Cache:** Cloudflare KV (`SESSION_KV`) — 1h session, debug logs
 - **AI:** Claude (`claude-haiku-4-5-20251001`) via AI Gateway, fallback to direct Anthropic
-- **Cron:** `0 2 * * 1-5` (UTC) → 09:00 Bangkok, Mon–Fri
+- **Daily alert:** GitHub Actions cron (`.github/workflows/daily-alert.yml`) hits the worker's `/test-alert` endpoint at 02:00 UTC = 09:00 Bangkok, Mon–Fri
 
 ## Layout
 
@@ -50,6 +50,8 @@ wrangler d1 create finance-db
 wrangler secret put LINE_CHANNEL_SECRET
 wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
 wrangler secret put ANTHROPIC_API_KEY
+wrangler secret put CRON_KEY                # any random string; same value
+                                            # also goes in GitHub repo secret CRON_KEY
 
 # 4. Apply schema to remote D1
 npm run db:init:remote
@@ -75,18 +77,29 @@ npm run dev
 ## CI / CD
 
 `.github/workflows/deploy.yml` deploys on push to `main` using
-`cloudflare/wrangler-action@v3`. Required GitHub repo secrets:
+`cloudflare/wrangler-action@v3` and applies any new migrations to remote D1
+right after. Required GitHub repo secrets:
 
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
+- `CRON_KEY` — random string, same value as the `CRON_KEY` Cloudflare secret
+
+Required GitHub repo **variable** (Settings → Secrets and variables → Actions → Variables):
+
+- `WORKER_URL` — e.g. `https://buddyai.<your-subdomain>.workers.dev`
 
 Cloudflare-side runtime secrets (`ANTHROPIC_API_KEY`,
-`LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`) live in Cloudflare via
+`LINE_CHANNEL_SECRET`, `LINE_CHANNEL_ACCESS_TOKEN`, `CRON_KEY`) live in Cloudflare via
 `wrangler secret put` and never touch the repo.
 
 `db-migrate.yml` is a manual-trigger workflow that applies migrations to the
-remote D1 — run it once after the first deploy, then again whenever a new
-migration is added.
+remote D1 — only needed for the "apply just one file" use case; the deploy
+workflow already auto-applies all migrations after each deploy.
+
+`daily-alert.yml` runs on a GitHub Actions cron (Mon–Fri 02:00 UTC = 09:00
+Bangkok) and sends a `Bearer ${CRON_KEY}` request to the worker's
+`/test-alert` endpoint. We use GitHub's scheduler instead of Cloudflare's
+because CF cron triggers are quota-limited per account.
 
 ## Routes
 

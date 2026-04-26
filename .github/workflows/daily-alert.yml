@@ -1,0 +1,38 @@
+name: Daily stock alert
+
+on:
+  schedule:
+    # 02:00 UTC = 09:00 Asia/Bangkok, Mon-Fri
+    - cron: '0 2 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sanity-check secrets
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          CRON_KEY: ${{ secrets.CRON_KEY }}
+        run: |
+          set -eu
+          : "${WORKER_URL:?repo variable WORKER_URL missing (e.g. https://buddyai.sakpongun.workers.dev)}"
+          : "${CRON_KEY:?repo secret CRON_KEY missing — same value as the wrangler secret}"
+          echo "ready"
+
+      - name: Trigger /test-alert on the worker
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          CRON_KEY: ${{ secrets.CRON_KEY }}
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/body -w "%{http_code}" \
+            -H "Authorization: Bearer $CRON_KEY" \
+            "${WORKER_URL%/}/test-alert")
+          echo "HTTP $code"
+          cat /tmp/body
+          echo
+          [ "$code" = "200" ]

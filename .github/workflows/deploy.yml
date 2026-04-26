@@ -28,3 +28,34 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
+
+      - name: Apply D1 migrations (idempotent)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -uo pipefail
+          fail=0
+          for f in $(ls migrations/*.sql | sort); do
+            echo "::group::Applying $f"
+            out=$(npx wrangler d1 execute finance-db --remote --file="$f" 2>&1) || true
+            echo "$out"
+
+            # Tolerate "already-applied" errors so re-running on a DB that
+            # already has the schema (e.g. inherited from finance-line-bot)
+            # does not fail the deploy.
+            if echo "$out" | grep -qiE 'duplicate column|already exists|column .* in users|cannot add a column'; then
+              echo "tolerated: schema already up-to-date for this file"
+              echo "::endgroup::"
+              continue
+            fi
+
+            if echo "$out" | grep -qiE '✘ \[ERROR\]|^Error|D1_ERROR'; then
+              echo "::error file=$f::Migration failed"
+              fail=1
+            else
+              echo "applied"
+            fi
+            echo "::endgroup::"
+          done
+          exit $fail

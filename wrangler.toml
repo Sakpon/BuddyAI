@@ -4,7 +4,7 @@ compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-AI_GATEWAY_URL = "REPLACE_WITH_YOUR_AI_GATEWAY_URL"
+AI_GATEWAY_URL = "https://gateway.ai.cloudflare.com/v1/ab8f5e9234923dd340ce125286e91cf5/buddyai/anthropic"
 STOCK_API = "https://stock-dashboard-api.sakpongun.workers.dev"
 LIFF_STOCK_URL = "https://liff.line.me/2009626001-bwszQjZ9"
 LIFF_OIL_URL = "https://liff.line.me/2009626001-1LlvAOZp"
@@ -13,12 +13,12 @@ TIMEZONE = "Asia/Bangkok"
 
 [[kv_namespaces]]
 binding = "SESSION_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "bdb57e8a8f2648df9176595f4e1429b7"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "finance-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "160ca3ab-dd42-40a6-a43b-eb20bc90118e"
 
 [triggers]
 crons = ["0 2 * * 1-5"]

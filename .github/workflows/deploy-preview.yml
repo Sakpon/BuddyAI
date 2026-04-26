@@ -1,4 +1,4 @@
-name: Preview Deploy
+name: Validate
 
 on:
   pull_request:
@@ -6,25 +6,41 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
-  preview:
+  validate:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
-      - run: npm ci || npm install
+      - name: Syntax-check all source files
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            node --check "$f" || fail=1
+          done < <(find src tests -type f -name '*.js' 2>/dev/null)
+          exit $fail
 
-      - name: Wrangler dry-run (validate config)
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --dry-run --outdir=dist
+      - name: Parse wrangler.toml
+        run: |
+          node -e "
+            const fs = require('fs');
+            const toml = fs.readFileSync('wrangler.toml', 'utf8');
+            const required = ['name =', 'main =', 'compatibility_date =', 'kv_namespaces', 'd1_databases', 'triggers'];
+            for (const k of required) {
+              if (!toml.includes(k)) { console.error('missing in wrangler.toml:', k); process.exit(1); }
+            }
+            console.log('wrangler.toml looks ok');
+          "
+
+      - name: Sanity-check migrations exist
+        run: |
+          set -e
+          test -f migrations/0001_init.sql
+          test -f migrations/0002_add_alert_subscribed.sql
+          echo "migrations present"

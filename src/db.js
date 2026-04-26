@@ -164,6 +164,41 @@ export async function clearPortfolios(env, userId) {
   await deletePendingPortfolio(env, userId);
 }
 
+export async function logEvent(env, userId, type, payload) {
+  if (!userId || !type) return;
+  try {
+    await env.DB.prepare(
+      `INSERT INTO events (user_id, type, payload) VALUES (?, ?, ?)`,
+    )
+      .bind(userId, type, payload == null ? null : JSON.stringify(payload))
+      .run();
+  } catch (err) {
+    console.error('logEvent failed', type, err?.message || err);
+  }
+}
+
+export async function getJourney(env, userId, limit = 100) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, type, payload, created_at
+       FROM events
+      WHERE user_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?`,
+  )
+    .bind(userId, limit)
+    .all();
+  return (results || []).map((r) => ({
+    id: r.id,
+    type: r.type,
+    created_at: r.created_at,
+    payload: r.payload ? safeParse(r.payload) : null,
+  }));
+}
+
+function safeParse(s) {
+  try { return JSON.parse(s); } catch { return s; }
+}
+
 function numOrNull(v) {
   if (v === null || v === undefined || v === '') return null;
   const n = typeof v === 'number' ? v : Number(String(v).replace(/,/g, ''));

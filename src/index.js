@@ -6,8 +6,10 @@ import {
   deletePendingPortfolio,
   getActivePortfolio,
   getHistory,
+  getJourney,
   getPendingPortfolio,
   getSubscribedUsers,
+  logEvent,
   savePendingPortfolio,
   saveMessage,
   subscribeAlert,
@@ -74,6 +76,15 @@ export default {
       return json({ ok: true, log: log ? JSON.parse(log) : null });
     }
 
+    if (url.pathname === '/journey') {
+      if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
+      const targetUserId = url.searchParams.get('userId');
+      if (!targetUserId) return json({ ok: false, error: 'userId required' }, 400);
+      const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit')) || 100));
+      const events = await getJourney(env, targetUserId, limit);
+      return json({ ok: true, userId: targetUserId, count: events.length, events });
+    }
+
     return new Response('Not found', { status: 404 });
   },
 
@@ -115,6 +126,7 @@ async function handleEvent(ev, env) {
   if (ev.type === 'unfollow') {
     await unsubscribeAlert(env, userId);
     await deleteSession(env, userId);
+    await logEvent(env, userId, 'unfollow', null);
     return;
   }
 
@@ -139,6 +151,7 @@ async function handleFollow(ev, env, userId) {
     displayName: profile?.displayName || null,
     pictureUrl: profile?.pictureUrl || null,
   });
+  await logEvent(env, userId, 'follow', { displayName: profile?.displayName || null });
   await reply(env, ev.replyToken, [
     textMsg(
       `ยินดีต้อนรับสู่ FinBot! ${profile?.displayName || ''}\n` +
@@ -154,23 +167,33 @@ async function handlePostback(ev, env, userId) {
 
   if (action === 'subscribe') {
     await subscribeAlert(env, userId);
+    await logEvent(env, userId, 'subscribe', { via: 'postback' });
     return reply(env, ev.replyToken, textMsg('สมัครการแจ้งเตือนเรียบร้อย รับหุ้นเด่นทุกเช้า 09:00 (จ-ศ)'));
   }
   if (action === 'unsubscribe') {
     await unsubscribeAlert(env, userId);
+    await logEvent(env, userId, 'unsubscribe', { via: 'postback' });
     return reply(env, ev.replyToken, textMsg('ยกเลิกการแจ้งเตือนแล้ว'));
   }
 
   if (action === 'confirm-portfolio') {
-    const id = await confirmPendingPortfolio(env, userId);
-    if (!id) {
+    const portfolioId = await confirmPendingPortfolio(env, userId);
+    if (!portfolioId) {
       return reply(env, ev.replyToken, textMsg('หมดเวลายืนยัน หรือไม่พบข้อมูลพอร์ตค้างไว้ ลองส่งภาพใหม่อีกครั้งนะครับ'));
     }
+    const saved = await getActivePortfolio(env, userId).catch(() => null);
+    await logEvent(env, userId, 'portfolio_saved', {
+      portfolio_id: portfolioId,
+      source: saved?.portfolio?.source || null,
+      total_value: saved?.portfolio?.total_value ?? null,
+      symbols: (saved?.holdings || []).map((h) => h.symbol),
+    });
     return reply(env, ev.replyToken, textMsg('บันทึกพอร์ตเรียบร้อย พิมพ์ "วิเคราะห์พอร์ต" เพื่อขอความเห็น หรือ "พอร์ต" เพื่อดูสรุป'));
   }
 
   if (action === 'retry-portfolio') {
     await deletePendingPortfolio(env, userId);
+    await logEvent(env, userId, 'portfolio_retry', null);
     return reply(env, ev.replyToken, textMsg('ยกเลิกแล้ว ส่งภาพพอร์ตอีกครั้งได้เลยครับ'));
   }
 }
@@ -185,18 +208,27 @@ async function handleImage(ev, env, userId, messageId) {
     extracted = await extractPortfolio(env, bytes, mimeType);
   } catch (err) {
     console.error('vision error', err);
+    await logEvent(env, userId, 'vision_failed', { error: String(err?.message || err).slice(0, 200) });
     return push(env, userId, textMsg('ขออภัยครับ อ่านภาพไม่สำเร็จ ลองส่งใหม่หรือใช้ภาพที่คมชัดกว่านี้ได้ไหมครับ'));
   }
 
   if (extracted.error === 'not_portfolio') {
+    await logEvent(env, userId, 'vision_rejected', { reason: extracted.reason || 'not_portfolio' });
     return push(env, userId, textMsg('ภาพนี้ดูไม่ใช่หน้าจอพอร์ต ลองส่งภาพหน้าจอจากแอปโบรกเกอร์อีกครั้งนะครับ'));
   }
 
   if (!extracted.holdings || !extracted.holdings.length) {
+    await logEvent(env, userId, 'vision_empty', { source: extracted.source || null });
     return push(env, userId, textMsg('อ่านภาพได้แต่ไม่เจอรายการหุ้นเลย ลองส่งภาพที่เห็นรายการหุ้นชัดเจนอีกครั้งนะครับ'));
   }
 
   await savePendingPortfolio(env, userId, extracted);
+  await logEvent(env, userId, 'portfolio_extracted', {
+    source: extracted.source || null,
+    total_value: extracted.total_value ?? null,
+    symbols: (extracted.holdings || []).map((h) => h.symbol),
+    warnings: extracted.warnings || [],
+  });
   await push(env, userId, [
     textMsg('อ่านพอร์ตจากภาพแล้ว ตรวจสอบความถูกต้องและกดบันทึกเพื่อเริ่มใช้งานได้เลยครับ'),
     portfolioConfirmCard(extracted),
@@ -212,6 +244,7 @@ async function handleText(ev, env, userId, text) {
   if (cmd === 'reset') {
     await clearHistory(env, userId);
     await deleteSession(env, userId);
+    await logEvent(env, userId, 'reset_chat', null);
     return reply(env, ev.replyToken, textMsg('ล้างประวัติแชทแล้ว เริ่มใหม่ได้เลย'));
   }
   if (cmd === 'stock') {
@@ -223,10 +256,12 @@ async function handleText(ev, env, userId, text) {
   if (cmd === 'subscribe') {
     await upsertUser(env, { userId });
     await subscribeAlert(env, userId);
+    await logEvent(env, userId, 'subscribe', { via: 'text' });
     return reply(env, ev.replyToken, textMsg('สมัครการแจ้งเตือนเรียบร้อย รับหุ้นเด่นทุกเช้า 09:00 (จ-ศ)'));
   }
   if (cmd === 'unsubscribe') {
     await unsubscribeAlert(env, userId);
+    await logEvent(env, userId, 'unsubscribe', { via: 'text' });
     return reply(env, ev.replyToken, textMsg('ยกเลิกการแจ้งเตือนแล้ว'));
   }
   if (cmd === 'portfolio') {
@@ -237,6 +272,7 @@ async function handleText(ev, env, userId, text) {
   }
   if (cmd === 'clear-portfolio') {
     await clearPortfolios(env, userId);
+    await logEvent(env, userId, 'portfolio_cleared', null);
     return reply(env, ev.replyToken, textMsg('ลบข้อมูลพอร์ตทั้งหมดแล้ว'));
   }
 
@@ -305,8 +341,19 @@ async function analysePortfolio(ev, env, userId) {
     analysis = await generatePortfolioAnalysis(env, active.portfolio, active.holdings);
   } catch (err) {
     console.error('analyse error', err);
+    await logEvent(env, userId, 'portfolio_analysis_failed', { error: String(err?.message || err).slice(0, 200) });
     return push(env, userId, textMsg('ขออภัยครับ ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ'));
   }
+
+  await logEvent(env, userId, 'portfolio_analysis', {
+    portfolio_id: active.portfolio.id,
+    verdict: analysis?.verdict || null,
+    verdict_reason: analysis?.verdict_reason || null,
+    top_symbol: analysis?.metrics?.top_symbol || null,
+    top_weight_pct: analysis?.metrics?.top_weight_pct ?? null,
+    concentration: analysis?.metrics?.concentration || null,
+    sector_count: analysis?.metrics?.sector_count ?? null,
+  });
 
   if (analysis && (analysis.verdict || analysis.metrics || analysis.observations)) {
     return push(env, userId, portfolioAnalysisCard(analysis));
@@ -357,6 +404,11 @@ async function sendDailyStockAlert(env) {
           : (genericPicks ||= await generatePicksViaClaude(env));
       } catch (err) {
         console.error('picks error', userId, err);
+        await logEvent(env, userId, 'daily_alert_failed', {
+          stage: 'picks',
+          error: String(err?.message || err).slice(0, 200),
+        });
+        failed++;
         continue;
       }
       const card = dailyAlertCard({
@@ -365,8 +417,21 @@ async function sendDailyStockAlert(env) {
         summary: picks.summary,
       });
       const ok = await push(env, userId, [card]);
-      if (ok) success++;
-      else failed++;
+      if (ok) {
+        success++;
+        await logEvent(env, userId, 'daily_alert_sent', {
+          date,
+          personalised: !!active,
+          summary: picks.summary || null,
+          picks: (picks.picks || []).map((p) => ({
+            symbol: p.symbol,
+            signal: p.signal,
+          })),
+        });
+      } else {
+        failed++;
+        await logEvent(env, userId, 'daily_alert_failed', { stage: 'push' });
+      }
     }
   } catch (err) {
     error = String(err?.message || err);

@@ -57,16 +57,19 @@ export default {
     }
 
     if (url.pathname === '/test-alert') {
+      if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
       ctx.waitUntil(sendDailyStockAlert(env));
       return json({ ok: true, triggered: 'daily-alert' });
     }
 
     if (url.pathname === '/test-subs') {
+      if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
       const subs = await getSubscribedUsers(env);
       return json({ ok: true, count: subs.length, subs });
     }
 
     if (url.pathname === '/test-log') {
+      if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
       const log = await env.SESSION_KV.get('cron:last-run');
       return json({ ok: true, log: log ? JSON.parse(log) : null });
     }
@@ -385,4 +388,14 @@ function json(obj, status = 200) {
     status,
     headers: { 'content-type': 'application/json; charset=utf-8' },
   });
+}
+
+function authorisedCron(request, env) {
+  if (!env.CRON_KEY) return false;
+  const header = request.headers.get('authorization') || '';
+  const expected = `Bearer ${env.CRON_KEY}`;
+  if (header.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < header.length; i++) diff |= header.charCodeAt(i) ^ expected.charCodeAt(i);
+  return diff === 0;
 }

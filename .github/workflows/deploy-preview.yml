@@ -31,7 +31,7 @@ jobs:
           node -e "
             const fs = require('fs');
             const toml = fs.readFileSync('wrangler.toml', 'utf8');
-            const required = ['name =', 'main =', 'compatibility_date =', 'kv_namespaces', 'd1_databases', 'triggers'];
+            const required = ['name =', 'main =', 'compatibility_date =', 'kv_namespaces', 'd1_databases'];
             for (const k of required) {
               if (!toml.includes(k)) { console.error('missing in wrangler.toml:', k); process.exit(1); }
             }

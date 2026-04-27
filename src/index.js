@@ -9,14 +9,18 @@ import {
   clearPortfolios,
   confirmPendingPortfolio,
   deletePendingPortfolio,
+  deletePortfolioById,
   getActivePortfolio,
   getHistory,
   getJourney,
   getPendingPortfolio,
   getSubscribedUsers,
+  listPortfolios,
   logEvent,
+  renamePortfolio,
   savePendingPortfolio,
   saveMessage,
+  setActivePortfolio,
   subscribeAlert,
   unsubscribeAlert,
   upsertUser,
@@ -27,6 +31,7 @@ import { oilLiffCard, stockLiffCard } from './flex/liffCards.js';
 import {
   portfolioAnalysisCard,
   portfolioConfirmCard,
+  portfolioListCard,
   portfolioRebalanceCard,
   portfolioSummaryCard,
 } from './flex/portfolio.js';
@@ -45,10 +50,12 @@ import { extractPortfolio, fetchLineImage } from './vision.js';
 const HELP_TH = [
   'คำสั่งที่ใช้ได้:',
   '• ส่งภาพพอร์ตจากแอปโบรกเกอร์ — ระบบจะอ่านและสรุปให้',
-  '• "พอร์ต" — ดูพอร์ตล่าสุดที่บันทึกไว้',
+  '• "พอร์ต" — ดูพอร์ตที่ใช้งานอยู่',
+  '• "พอร์ตทั้งหมด" — รายการพอร์ตทั้งหมด เลือก/ลบได้',
+  '• "เปลี่ยนชื่อ <ชื่อใหม่>" — เปลี่ยนชื่อพอร์ตที่ใช้งานอยู่',
   '• "วิเคราะห์พอร์ต" — ขอความเห็นจาก AI',
   '• "ปรับพอร์ต" — ขอข้อเสนอการ rebalance จาก AI',
-  '• "ล้างพอร์ต" — ลบข้อมูลพอร์ตทั้งหมด',
+  '• "ล้างพอร์ต" — ลบพอร์ตทั้งหมด',
   '• "ดูหุ้น" — เปิด Stock Dashboard',
   '• "ราคาน้ำมัน" — ดูราคาน้ำมันวันนี้',
   '• "สมัครการแจ้งเตือน" — รับหุ้นเด่นทุก 09:00',
@@ -195,17 +202,43 @@ async function handlePostback(ev, env, userId) {
     const saved = await getActivePortfolio(env, userId).catch(() => null);
     await logEvent(env, userId, 'portfolio_saved', {
       portfolio_id: portfolioId,
+      name: saved?.portfolio?.name || null,
       source: saved?.portfolio?.source || null,
       total_value: saved?.portfolio?.total_value ?? null,
       symbols: (saved?.holdings || []).map((h) => h.symbol),
     });
-    return reply(env, ev.replyToken, textMsg('บันทึกพอร์ตเรียบร้อย พิมพ์ "วิเคราะห์พอร์ต" เพื่อขอความเห็น หรือ "พอร์ต" เพื่อดูสรุป'));
+    return reply(env, ev.replyToken, textMsg(
+      `บันทึก "${saved?.portfolio?.name || 'พอร์ต'}" แล้ว — ตั้งเป็นพอร์ตที่ใช้งานปัจจุบัน\n` +
+      'พิมพ์ "วิเคราะห์พอร์ต" หรือ "ปรับพอร์ต" เพื่อต่อ\n' +
+      'พิมพ์ "เปลี่ยนชื่อ <ชื่อใหม่>" เพื่อตั้งชื่อให้ตรงใจ',
+    ));
   }
 
   if (action === 'retry-portfolio') {
     await deletePendingPortfolio(env, userId);
     await logEvent(env, userId, 'portfolio_retry', null);
     return reply(env, ev.replyToken, textMsg('ยกเลิกแล้ว ส่งภาพพอร์ตอีกครั้งได้เลยครับ'));
+  }
+
+  if (action === 'select-portfolio') {
+    const id = Number(data.get('id'));
+    if (!Number.isFinite(id)) return reply(env, ev.replyToken, textMsg('คำสั่งไม่ถูกต้อง'));
+    const ok = await setActivePortfolio(env, userId, id);
+    if (!ok) return reply(env, ev.replyToken, textMsg('ไม่พบพอร์ตนั้น อาจถูกลบไปแล้ว'));
+    await logEvent(env, userId, 'portfolio_switched', { portfolio_id: id });
+    const active = await getActivePortfolio(env, userId);
+    return reply(env, ev.replyToken, textMsg(
+      `เลือก "${active?.portfolio?.name || 'พอร์ต'}" เป็นพอร์ตที่ใช้งานแล้ว`,
+    ));
+  }
+
+  if (action === 'delete-portfolio') {
+    const id = Number(data.get('id'));
+    if (!Number.isFinite(id)) return reply(env, ev.replyToken, textMsg('คำสั่งไม่ถูกต้อง'));
+    const ok = await deletePortfolioById(env, userId, id);
+    if (!ok) return reply(env, ev.replyToken, textMsg('ไม่พบพอร์ตนั้น'));
+    await logEvent(env, userId, 'portfolio_deleted', { portfolio_id: id });
+    return reply(env, ev.replyToken, textMsg('ลบพอร์ตแล้ว'));
   }
 }
 
@@ -247,7 +280,8 @@ async function handleImage(ev, env, userId, messageId) {
 }
 
 async function handleText(ev, env, userId, text) {
-  const cmd = matchCommand(text);
+  const match = matchCommand(text);
+  const cmd = match?.cmd;
 
   if (cmd === 'help') {
     return reply(env, ev.replyToken, textMsg(HELP_TH));
@@ -278,11 +312,34 @@ async function handleText(ev, env, userId, text) {
   if (cmd === 'portfolio') {
     return showPortfolio(ev, env, userId);
   }
+  if (cmd === 'list-portfolios') {
+    const list = await listPortfolios(env, userId);
+    return reply(env, ev.replyToken, portfolioListCard(list));
+  }
   if (cmd === 'analyse-portfolio') {
     return analysePortfolio(ev, env, userId);
   }
   if (cmd === 'rebalance-portfolio') {
     return rebalancePortfolio(ev, env, userId);
+  }
+  if (cmd === 'rename-portfolio') {
+    const newName = match.arg;
+    if (!newName) {
+      return reply(env, ev.replyToken, textMsg('พิมพ์ "เปลี่ยนชื่อ <ชื่อใหม่>" ตามด้วยชื่อที่ต้องการ'));
+    }
+    const active = await getActivePortfolio(env, userId);
+    if (!active) {
+      return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่ใช้งาน'));
+    }
+    const oldName = active.portfolio.name;
+    const ok = await renamePortfolio(env, userId, active.portfolio.id, newName);
+    if (!ok) return reply(env, ev.replyToken, textMsg('ไม่สามารถเปลี่ยนชื่อได้'));
+    await logEvent(env, userId, 'portfolio_renamed', {
+      portfolio_id: active.portfolio.id,
+      from: oldName,
+      to: newName.trim().slice(0, 60),
+    });
+    return reply(env, ev.replyToken, textMsg(`เปลี่ยนชื่อจาก "${oldName}" เป็น "${newName.trim().slice(0, 60)}" แล้ว`));
   }
   if (cmd === 'clear-portfolio') {
     await clearPortfolios(env, userId);
@@ -410,17 +467,30 @@ async function analysePortfolio(ev, env, userId) {
 }
 
 function matchCommand(text) {
-  const t = text.toLowerCase();
-  if (t === '/help') return 'help';
-  if (t === '/reset') return 'reset';
-  if (['ดูหุ้น', 'หุ้น', 'stock'].includes(t)) return 'stock';
-  if (['ราคาน้ำมัน', 'น้ำมัน', 'oil'].includes(t)) return 'oil';
-  if (t === 'สมัครการแจ้งเตือน') return 'subscribe';
-  if (t === 'ยกเลิกการแจ้งเตือน') return 'unsubscribe';
-  if (['พอร์ต', 'portfolio'].includes(t)) return 'portfolio';
-  if (['วิเคราะห์พอร์ต', 'analyze portfolio', 'analyse portfolio'].includes(t)) return 'analyse-portfolio';
-  if (['ปรับพอร์ต', 'rebalance', 'rebalance portfolio'].includes(t)) return 'rebalance-portfolio';
-  if (['ล้างพอร์ต', 'clear portfolio'].includes(t)) return 'clear-portfolio';
+  const t = text.trim();
+  const tl = t.toLowerCase();
+
+  if (tl === '/help') return { cmd: 'help' };
+  if (tl === '/reset') return { cmd: 'reset' };
+  if (['ดูหุ้น', 'หุ้น', 'stock'].includes(tl)) return { cmd: 'stock' };
+  if (['ราคาน้ำมัน', 'น้ำมัน', 'oil'].includes(tl)) return { cmd: 'oil' };
+  if (tl === 'สมัครการแจ้งเตือน') return { cmd: 'subscribe' };
+  if (tl === 'ยกเลิกการแจ้งเตือน') return { cmd: 'unsubscribe' };
+  if (['พอร์ต', 'portfolio'].includes(tl)) return { cmd: 'portfolio' };
+  if (['พอร์ตทั้งหมด', 'รายการพอร์ต', 'portfolios', 'list portfolios', 'list'].includes(tl))
+    return { cmd: 'list-portfolios' };
+  if (['วิเคราะห์พอร์ต', 'analyze portfolio', 'analyse portfolio'].includes(tl))
+    return { cmd: 'analyse-portfolio' };
+  if (['ปรับพอร์ต', 'rebalance', 'rebalance portfolio'].includes(tl))
+    return { cmd: 'rebalance-portfolio' };
+  if (['ล้างพอร์ต', 'clear portfolio'].includes(tl)) return { cmd: 'clear-portfolio' };
+
+  // Arg-bearing commands.
+  for (const prefix of ['เปลี่ยนชื่อ ', 'เปลี่ยนชื่อพอร์ต ', 'rename ']) {
+    if (tl.startsWith(prefix.toLowerCase())) {
+      return { cmd: 'rename-portfolio', arg: t.slice(prefix.length).trim() };
+    }
+  }
   return null;
 }
 

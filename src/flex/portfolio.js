@@ -85,7 +85,7 @@ export function portfolioSummaryCard({ portfolio, holdings }) {
     contents: {
       type: 'bubble',
       size: 'mega',
-      hero: hero('พอร์ตของคุณ', portfolio.source || ''),
+      hero: hero(portfolio.name || 'พอร์ตของคุณ', portfolio.source || ''),
       body: {
         type: 'box',
         layout: 'vertical',
@@ -490,6 +490,108 @@ function rebalanceRow(s) {
       ...(s.reason
         ? [{ type: 'text', text: s.reason, wrap: true, size: 'xs', color: '#1E293B' }]
         : []),
+    ],
+  };
+}
+
+export function portfolioListCard(portfolios) {
+  const rows = (portfolios || []).slice(0, 8).map((p) => portfolioListRow(p));
+  const tail = (portfolios || []).length > 8
+    ? [{ type: 'text', text: `+ อีก ${portfolios.length - 8} พอร์ต`, size: 'xs', color: '#94A3B8', margin: 'sm' }]
+    : [];
+
+  return {
+    type: 'flex',
+    altText: 'พอร์ตทั้งหมดของคุณ',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: hero('พอร์ตทั้งหมด', `${(portfolios || []).length} รายการ`),
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: rows.length
+          ? [...rows, ...tail]
+          : [{ type: 'text', text: '— ยังไม่มีพอร์ตที่บันทึกไว้ —', size: 'sm', color: '#94A3B8', align: 'center' }],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'text',
+            text: 'แตะ "เลือก" เพื่อตั้งเป็นพอร์ตที่ใช้งาน',
+            size: 'xxs',
+            color: '#94A3B8',
+            align: 'center',
+            wrap: true,
+          },
+        ],
+      },
+    },
+  };
+}
+
+function portfolioListRow(p) {
+  const isActive = p.is_active === 1 || p.is_active === true;
+  const meta = [];
+  if (p.source) meta.push(p.source);
+  if (p.total_value != null) meta.push(fmtMoney(p.total_value));
+  const metaLine = meta.join(' · ') || '—';
+
+  return {
+    type: 'box',
+    layout: 'vertical',
+    paddingAll: '10px',
+    cornerRadius: '8px',
+    backgroundColor: isActive ? '#0EA5E914' : '#F1F5F9',
+    spacing: 'xs',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: p.name || 'พอร์ต', size: 'sm', weight: 'bold', color: '#0F172A', flex: 5 },
+          ...(isActive
+            ? [{ type: 'text', text: 'ใช้งานอยู่', size: 'xxs', weight: 'bold', color: '#0EA5E9', align: 'end', flex: 3 }]
+            : []),
+        ],
+      },
+      { type: 'text', text: metaLine, size: 'xs', color: '#475569' },
+      {
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'sm',
+        margin: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: isActive ? 'secondary' : 'primary',
+            color: isActive ? undefined : '#0EA5E9',
+            height: 'sm',
+            flex: 3,
+            action: {
+              type: 'postback',
+              label: isActive ? 'กำลังใช้' : 'เลือก',
+              data: `action=select-portfolio&id=${p.id}`,
+              displayText: `เลือก ${p.name || 'พอร์ต'}`,
+            },
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            flex: 2,
+            action: {
+              type: 'postback',
+              label: 'ลบ',
+              data: `action=delete-portfolio&id=${p.id}`,
+              displayText: `ลบ ${p.name || 'พอร์ต'}`,
+            },
+          },
+        ],
+      },
     ],
   };
 }

@@ -88,20 +88,37 @@ export async function deletePendingPortfolio(env, userId) {
   await env.SESSION_KV.delete(PENDING_PREFIX + userId);
 }
 
-export async function confirmPendingPortfolio(env, userId) {
+export async function confirmPendingPortfolio(env, userId, name) {
   const pending = await getPendingPortfolio(env, userId);
   if (!pending) return null;
-  const portfolioId = await insertPortfolio(env, userId, pending);
+  const finalName = (name && String(name).trim()) || defaultPortfolioName(pending);
+  const portfolioId = await insertPortfolio(env, userId, pending, finalName);
   await deletePendingPortfolio(env, userId);
   return portfolioId;
 }
 
-async function insertPortfolio(env, userId, p) {
+function defaultPortfolioName(p) {
+  const source = (p.source || 'พอร์ต').trim();
+  const day = new Intl.DateTimeFormat('th-TH', {
+    timeZone: 'Asia/Bangkok',
+    day: 'numeric',
+    month: 'short',
+  }).format(new Date());
+  return `${source} · ${day}`;
+}
+
+async function insertPortfolio(env, userId, p, name) {
+  // Deactivate any other portfolios so the new one becomes the active.
+  await env.DB.prepare(
+    `UPDATE portfolios SET is_active = 0 WHERE user_id = ?`,
+  ).bind(userId).run();
+
   const stmt = env.DB.prepare(
-    `INSERT INTO portfolios (user_id, source, total_value, cash, notes)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO portfolios (user_id, name, source, total_value, cash, notes, is_active)
+     VALUES (?, ?, ?, ?, ?, ?, 1)`,
   ).bind(
     userId,
+    name,
     p.source || null,
     numOrNull(p.total_value),
     numOrNull(p.cash),
@@ -137,9 +154,10 @@ async function insertPortfolio(env, userId, p) {
 
 export async function getActivePortfolio(env, userId) {
   const portfolio = await env.DB.prepare(
-    `SELECT id, source, total_value, cash, notes, taken_at
+    `SELECT id, name, source, total_value, cash, notes, taken_at, is_active
        FROM portfolios
       WHERE user_id = ?
+        AND is_active = 1
       ORDER BY taken_at DESC, id DESC
       LIMIT 1`,
   )
@@ -155,6 +173,71 @@ export async function getActivePortfolio(env, userId) {
     .bind(portfolio.id)
     .all();
   return { portfolio, holdings: results || [] };
+}
+
+export async function listPortfolios(env, userId) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, name, source, total_value, taken_at, is_active
+       FROM portfolios
+      WHERE user_id = ?
+      ORDER BY is_active DESC, taken_at DESC, id DESC`,
+  )
+    .bind(userId)
+    .all();
+  return results || [];
+}
+
+export async function setActivePortfolio(env, userId, portfolioId) {
+  // Atomic flip via CASE so exactly one row ends up is_active=1.
+  const { meta } = await env.DB.prepare(
+    `UPDATE portfolios
+        SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END
+      WHERE user_id = ?`,
+  )
+    .bind(portfolioId, userId)
+    .run();
+  return (meta?.changes || 0) > 0;
+}
+
+export async function renamePortfolio(env, userId, portfolioId, newName) {
+  const trimmed = String(newName || '').trim();
+  if (!trimmed) return false;
+  const { meta } = await env.DB.prepare(
+    `UPDATE portfolios SET name = ? WHERE id = ? AND user_id = ?`,
+  )
+    .bind(trimmed.slice(0, 60), portfolioId, userId)
+    .run();
+  return (meta?.changes || 0) > 0;
+}
+
+export async function deletePortfolioById(env, userId, portfolioId) {
+  // Was this the active one? If yes, promote the next-most-recent.
+  const wasActive = await env.DB.prepare(
+    `SELECT is_active FROM portfolios WHERE id = ? AND user_id = ?`,
+  )
+    .bind(portfolioId, userId)
+    .first();
+  if (!wasActive) return false;
+
+  await env.DB.prepare(`DELETE FROM portfolios WHERE id = ? AND user_id = ?`)
+    .bind(portfolioId, userId)
+    .run();
+
+  if (wasActive.is_active) {
+    const next = await env.DB.prepare(
+      `SELECT id FROM portfolios WHERE user_id = ? ORDER BY taken_at DESC, id DESC LIMIT 1`,
+    )
+      .bind(userId)
+      .first();
+    if (next) {
+      await env.DB.prepare(
+        `UPDATE portfolios SET is_active = 1 WHERE id = ?`,
+      )
+        .bind(next.id)
+        .run();
+    }
+  }
+  return true;
 }
 
 export async function clearPortfolios(env, userId) {

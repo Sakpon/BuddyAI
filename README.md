@@ -118,11 +118,13 @@ Endpoints marked *(CRON_KEY)* require an `Authorization: Bearer ${CRON_KEY}` hea
 
 | User input | Action |
 |---|---|
-| *(image)* | Send a portfolio screenshot → Claude vision extracts holdings → user taps **บันทึกพอร์ต** to confirm |
-| `พอร์ต` / `portfolio` | Show the saved portfolio summary card |
-| `วิเคราะห์พอร์ต` | AI commentary on diversification, sector exposure, things to watch |
-| `ปรับพอร์ต` | AI rebalance suggestions per holding (Trim/Add/Hold/Watch) + diversifier ideas |
-| `ล้างพอร์ต` | Delete all saved portfolios |
+| *(image)* | Send a portfolio screenshot → Claude vision extracts holdings → user taps **บันทึกพอร์ต** to confirm. Portfolio is auto-named `<source> · <day>` and becomes the active one. |
+| `พอร์ต` / `portfolio` | Show the **active** portfolio summary card |
+| `พอร์ตทั้งหมด` / `portfolios` / `list` | List all saved portfolios (Flex card) — tap **เลือก** to switch active, **ลบ** to delete one |
+| `เปลี่ยนชื่อ <ชื่อใหม่>` / `rename <name>` | Rename the active portfolio |
+| `วิเคราะห์พอร์ต` | AI commentary on the active portfolio |
+| `ปรับพอร์ต` | AI rebalance suggestions on the active portfolio |
+| `ล้างพอร์ต` | Delete **all** saved portfolios |
 | `ดูหุ้น` / `หุ้น` / `stock` | Open Stock Dashboard (LIFF) |
 | `ราคาน้ำมัน` / `น้ำมัน` / `oil` | Open Oil Dashboard (LIFF) |
 | `สมัครการแจ้งเตือน` | Subscribe to daily alert (becomes portfolio-aware once a portfolio is saved) |
@@ -157,9 +159,12 @@ Event types currently emitted from `src/index.js`:
 | `reset_chat` | `/reset` clears chat history | — |
 | `vision_failed` / `vision_rejected` / `vision_empty` | Image upload couldn't be turned into a portfolio | `error`/`reason`/`source` |
 | `portfolio_extracted` | Vision returned a holdings list (pending confirmation) | `source`, `total_value`, `symbols`, `warnings` |
-| `portfolio_saved` | User tapped **บันทึกพอร์ต** | `portfolio_id`, `source`, `total_value`, `symbols` |
+| `portfolio_saved` | User tapped **บันทึกพอร์ต** | `portfolio_id`, `name`, `source`, `total_value`, `symbols` |
 | `portfolio_retry` | User tapped **อ่านใหม่** | — |
-| `portfolio_cleared` | `ล้างพอร์ต` wipes saved portfolios | — |
+| `portfolio_switched` | User tapped **เลือก** on the list card | `portfolio_id` |
+| `portfolio_renamed` | User typed `เปลี่ยนชื่อ …` | `portfolio_id`, `from`, `to` |
+| `portfolio_deleted` | User tapped **ลบ** on the list card | `portfolio_id` |
+| `portfolio_cleared` | `ล้างพอร์ต` wipes ALL saved portfolios | — |
 | `portfolio_analysis` | `วิเคราะห์พอร์ต` produced an analysis | `portfolio_id`, `verdict`, `verdict_reason`, `top_symbol`, `top_weight_pct`, `concentration`, `sector_count` |
 | `portfolio_analysis_failed` | Claude/AI Gateway error during analysis | `error` |
 | `portfolio_rebalance` | `ปรับพอร์ต` produced rebalance suggestions | `portfolio_id`, `summary`, `suggestions[{symbol,action,current/target_weight_pct}]`, `diversifiers[]` |

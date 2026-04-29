@@ -14,6 +14,7 @@ context and the daily alert to that portfolio.
 - **Cache:** Cloudflare KV (`SESSION_KV`) — 1h session, debug logs
 - **AI:** Claude (`claude-haiku-4-5-20251001`) via AI Gateway, fallback to direct Anthropic
 - **Daily alert:** GitHub Actions cron (`.github/workflows/daily-alert.yml`) hits the worker's `/test-alert` endpoint at 02:00 UTC = 09:00 Bangkok, Mon–Fri
+- **Daily portfolio news:** GitHub Actions cron (`.github/workflows/daily-news.yml`) hits the worker's `/test-news` endpoint at 01:00 UTC = 08:00 Bangkok, Mon–Fri — per-user per-symbol thematic news + recommended action
 
 ## Layout
 
@@ -101,6 +102,13 @@ Bangkok) and sends a `Bearer ${CRON_KEY}` request to the worker's
 `/test-alert` endpoint. We use GitHub's scheduler instead of Cloudflare's
 because CF cron triggers are quota-limited per account.
 
+`daily-news.yml` runs at 01:00 UTC = 08:00 Bangkok, Mon–Fri, and hits
+`/test-news`. For every alert subscriber that also has an active portfolio,
+the worker asks Claude for 3–5 thematic news items per held symbol — each
+with a coloured action label (Positive / Watch / Hold / Alert) and a one-line
+recommendation — and pushes the digest as a Flex card. Users with no
+portfolio still get the generic stock-picks alert at 09:00.
+
 ## Routes
 
 | Path | Method | Purpose |
@@ -108,8 +116,9 @@ because CF cron triggers are quota-limited per account.
 | `/health` | GET | Liveness probe |
 | `/callback` | POST | LINE webhook (signature verified) |
 | `/test-alert` | GET | Manually trigger the daily-alert cron *(CRON_KEY)* |
+| `/test-news` | GET | Manually trigger the daily portfolio-news cron *(CRON_KEY)* |
 | `/test-subs` | GET | List current subscribers *(CRON_KEY)* |
-| `/test-log` | GET | Last cron run log (from KV) *(CRON_KEY)* |
+| `/test-log` | GET | Last cron run logs — both `alert` and `news` *(CRON_KEY)* |
 | `/journey?userId=<id>&limit=100` | GET | Full event timeline for a given LINE userId *(CRON_KEY)* |
 
 Endpoints marked *(CRON_KEY)* require an `Authorization: Bearer ${CRON_KEY}` header.
@@ -171,6 +180,9 @@ Event types currently emitted from `src/index.js`:
 | `portfolio_rebalance_failed` | Claude/AI Gateway error during rebalance | `error` |
 | `daily_alert_sent` | Daily cron pushed the card to a subscriber | `date`, `personalised`, `summary`, `picks[]` |
 | `daily_alert_failed` | Per-user push or pick-generation failed | `stage`, `error` |
+| `daily_news_sent` | Daily news cron pushed the per-portfolio digest | `date`, `portfolio_id`, `summary`, `items[{symbol,action,headline}]` |
+| `daily_news_empty` | Subscriber has a portfolio but Claude returned no news items | `portfolio_id` |
+| `daily_news_failed` | Per-user news generate/push failed | `stage`, `error` |
 
 Read a user's timeline:
 ```bash

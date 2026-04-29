@@ -1,5 +1,6 @@
 import {
   askClaude,
+  generateDailyNewsForHoldings,
   generatePicksViaClaude,
   generatePortfolioAnalysis,
   generatePortfolioRebalance,
@@ -27,6 +28,7 @@ import {
 } from './db.js';
 import { enrollmentCard } from './flex/enrollment.js';
 import { dailyAlertCard } from './flex/dailyAlert.js';
+import { dailyNewsCard } from './flex/news.js';
 import { oilLiffCard, stockLiffCard } from './flex/liffCards.js';
 import {
   portfolioAnalysisCard,
@@ -82,6 +84,12 @@ export default {
       return json({ ok: true, triggered: 'daily-alert' });
     }
 
+    if (url.pathname === '/test-news') {
+      if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
+      ctx.waitUntil(sendDailyNews(env));
+      return json({ ok: true, triggered: 'daily-news' });
+    }
+
     if (url.pathname === '/test-subs') {
       if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
       const subs = await getSubscribedUsers(env);
@@ -90,8 +98,15 @@ export default {
 
     if (url.pathname === '/test-log') {
       if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
-      const log = await env.SESSION_KV.get('cron:last-run');
-      return json({ ok: true, log: log ? JSON.parse(log) : null });
+      const [alertLog, newsLog] = await Promise.all([
+        env.SESSION_KV.get('cron:last-run'),
+        env.SESSION_KV.get('news:last-run'),
+      ]);
+      return json({
+        ok: true,
+        alert: alertLog ? JSON.parse(alertLog) : null,
+        news: newsLog ? JSON.parse(newsLog) : null,
+      });
     }
 
     if (url.pathname === '/journey') {
@@ -558,6 +573,86 @@ async function sendDailyStockAlert(env) {
   } finally {
     await env.SESSION_KV.put(
       'cron:last-run',
+      JSON.stringify({ startedAt, finishedAt: new Date().toISOString(), success, failed, error }),
+      { expirationTtl: 60 * 60 * 24 * 7 },
+    );
+  }
+}
+
+async function sendDailyNews(env) {
+  const startedAt = new Date().toISOString();
+  let success = 0;
+  let failed = 0;
+  let error = null;
+
+  try {
+    const subs = await getSubscribedUsers(env);
+    if (!subs.length) {
+      await env.SESSION_KV.put(
+        'news:last-run',
+        JSON.stringify({ startedAt, subs: 0, success, failed }),
+        { expirationTtl: 60 * 60 * 24 * 7 },
+      );
+      return;
+    }
+
+    const date = bangkokDateString();
+
+    for (const userId of subs) {
+      const active = await getActivePortfolio(env, userId).catch(() => null);
+      if (!active || !active.holdings?.length) {
+        // Subscribed users without an active portfolio get nothing today —
+        // news is per-portfolio. They keep getting the daily-alert pick set.
+        continue;
+      }
+
+      let news;
+      try {
+        news = await generateDailyNewsForHoldings(env, active.holdings);
+      } catch (err) {
+        console.error('news error', userId, err);
+        await logEvent(env, userId, 'daily_news_failed', {
+          stage: 'generate',
+          error: String(err?.message || err).slice(0, 200),
+        });
+        failed++;
+        continue;
+      }
+
+      if (!news || !Array.isArray(news.items) || !news.items.length) {
+        await logEvent(env, userId, 'daily_news_empty', { portfolio_id: active.portfolio.id });
+        continue;
+      }
+
+      const card = dailyNewsCard({
+        date,
+        news,
+        portfolioName: active.portfolio.name || null,
+      });
+      const ok = await push(env, userId, [card]);
+      if (ok) {
+        success++;
+        await logEvent(env, userId, 'daily_news_sent', {
+          date,
+          portfolio_id: active.portfolio.id,
+          summary: news.summary || null,
+          items: (news.items || []).map((it) => ({
+            symbol: it.symbol,
+            action: it.action,
+            headline: it.headline,
+          })),
+        });
+      } else {
+        failed++;
+        await logEvent(env, userId, 'daily_news_failed', { stage: 'push' });
+      }
+    }
+  } catch (err) {
+    error = String(err?.message || err);
+    console.error('news cron error', err);
+  } finally {
+    await env.SESSION_KV.put(
+      'news:last-run',
       JSON.stringify({ startedAt, finishedAt: new Date().toISOString(), success, failed, error }),
       { expirationTtl: 60 * 60 * 24 * 7 },
     );

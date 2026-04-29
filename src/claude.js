@@ -118,6 +118,41 @@ export async function generatePortfolioRebalance(env, portfolio, holdings) {
   return parseJsonLoose(raw);
 }
 
+export async function generateDailyNewsForHoldings(env, holdings) {
+  if (!holdings || !holdings.length) return null;
+  const symbolList = holdings.map((h) => h.symbol).filter(Boolean).slice(0, 12).join(', ');
+  const prompt = [
+    {
+      role: 'user',
+      content:
+        'หุ้น/ETF ที่ผู้ใช้ถือ: ' + symbolList + '\n\n' +
+        'ในฐานะ FinBot สรุปประเด็น ข่าว/ปัจจัยมหภาค/sector themes ที่อาจกระทบราคาในวันนี้ ' +
+        '(รายตัว — เลือกที่เด่นที่สุด 3-5 ตัวเท่านั้น ไม่จำเป็นต้องครบทุก symbol)\n\n' +
+        'ตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่น:\n' +
+        '{\n' +
+        '  "summary": "<1 ประโยคสรุปภาพรวมเช้านี้>",\n' +
+        '  "items": [\n' +
+        '    {\n' +
+        '      "symbol": "<symbol>",\n' +
+        '      "headline": "<หัวข้อสั้น 1 บรรทัด>",\n' +
+        '      "summary": "<1-2 ประโยคบอกบริบท>",\n' +
+        '      "action": "Watch" | "Alert" | "Positive" | "Hold",\n' +
+        '      "recommendation": "<สั้น เชิงพิจารณา ไม่ใช่คำสั่งซื้อขาย>"\n' +
+        '    }\n' +
+        '  ]\n' +
+        '}\n\n' +
+        'กฎ:\n' +
+        '- ภาษาไทย ยกเว้น action (Watch/Alert/Positive/Hold)\n' +
+        '- ห้ามให้คำสั่ง "ซื้อ/ขาย" — ใช้ "เฝ้าดู", "พิจารณาลดสัดส่วน", "ติดตามผลประกอบการ"\n' +
+        '- ไม่ใช้ราคาเรียลไทม์ ไม่อ้างวันที่เฉพาะเจาะจง — เน้นปัจจัยพื้นฐาน/sector/macro/geopolitics\n' +
+        '- 3-5 items เท่านั้น เลือกที่ "อาจส่งผลวันนี้" ที่สุด\n' +
+        '- ตอบสั้นกระชับ ไม่เกิน 1500 tokens',
+    },
+  ];
+  const raw = await askClaude(prompt, env, { maxTokens: 2000 });
+  return parseJsonLoose(raw);
+}
+
 export async function generatePicksViaClaude(env, holdings) {
   const portfolioContext = holdings && holdings.length
     ? `ผู้ใช้ถือหุ้นเหล่านี้อยู่: ${holdings

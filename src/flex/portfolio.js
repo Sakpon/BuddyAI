@@ -509,6 +509,98 @@ function rebalanceRow(s) {
   };
 }
 
+const STATUS_TONE = {
+  Hold:  { color: '#475569', label: 'ถือ' },
+  Watch: { color: '#0EA5E9', label: 'เฝ้าดู' },
+  Add:   { color: '#16A34A', label: 'ทยอยเพิ่ม' },
+  Trim:  { color: '#D97706', label: 'ทยอยลด' },
+  Alert: { color: '#DC2626', label: 'แจ้งเตือน' },
+};
+
+export function holdingsStatusCard({ portfolioName, items, asOf }) {
+  const rows = (items || []).slice(0, 12).map((it) => statusRow(it));
+  return {
+    type: 'flex',
+    altText: 'สถานะหุ้นในพอร์ต',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: hero('สถานะหุ้น', portfolioName ? `${portfolioName}${asOf ? ' · ' + asOf : ''}` : (asOf || '')),
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: rows.length
+          ? rows
+          : [{ type: 'text', text: '— ไม่มีข้อมูล —', size: 'sm', color: '#94A3B8', align: 'center' }],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'text',
+            text: 'ราคาจาก Yahoo Finance อาจดีเลย์ 15-20 นาที · ข้อมูลเชิงการศึกษา ไม่ใช่คำแนะนำการลงทุน',
+            size: 'xxs',
+            color: '#94A3B8',
+            align: 'center',
+            wrap: true,
+          },
+        ],
+      },
+    },
+  };
+}
+
+function statusRow(it) {
+  const tone = STATUS_TONE[it.action] || STATUS_TONE.Watch;
+  const dayPct = it.day_change_pct;
+  const dayColor = dayPct == null ? '#475569' : dayPct >= 0 ? '#16A34A' : '#DC2626';
+  const dayText = dayPct == null
+    ? (it.has_quote ? '—' : 'no live')
+    : `${dayPct >= 0 ? '+' : ''}${dayPct.toFixed(2)}%`;
+
+  const plPct = it.pl_pct;
+  const plColor = plPct == null ? '#475569' : plPct >= 0 ? '#16A34A' : '#DC2626';
+  const plText = plPct == null ? '—' : `${plPct >= 0 ? '+' : ''}${plPct.toFixed(1)}%`;
+
+  const priceText = it.current_price != null
+    ? Number(it.current_price).toLocaleString('en-US', { maximumFractionDigits: 2 })
+    : '—';
+
+  return {
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'xs',
+    margin: 'sm',
+    paddingAll: '8px',
+    cornerRadius: '6px',
+    backgroundColor: '#F8FAFC',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: it.symbol || '?', size: 'sm', weight: 'bold', color: '#0F172A', flex: 3 },
+          { type: 'text', text: tone.label, size: 'xs', weight: 'bold', color: tone.color, align: 'end', flex: 3 },
+        ],
+      },
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: priceText, size: 'xs', color: '#475569', flex: 2 },
+          { type: 'text', text: dayText, size: 'xs', color: dayColor, align: 'center', flex: 2 },
+          { type: 'text', text: `P/L ${plText}`, size: 'xs', color: plColor, align: 'end', flex: 2 },
+        ],
+      },
+      ...(it.rationale
+        ? [{ type: 'text', text: it.rationale, wrap: true, size: 'xs', color: '#1E293B' }]
+        : []),
+    ],
+  };
+}
+
 export function portfolioCompareCard({ a, b, comparison }) {
   const c = comparison || {};
   const onlyA = (c.only_in_a || []).slice(0, 8);

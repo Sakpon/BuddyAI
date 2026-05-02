@@ -1,6 +1,7 @@
 import {
   askClaude,
   generateDailyNewsForHoldings,
+  generateHoldingsStatus,
   generatePicksViaClaude,
   generatePortfolioAnalysis,
   generatePortfolioComparison,
@@ -38,6 +39,7 @@ import { dailyAlertCard } from './flex/dailyAlert.js';
 import { dailyNewsCard } from './flex/news.js';
 import { oilLiffCard, stockLiffCard } from './flex/liffCards.js';
 import {
+  holdingsStatusCard,
   portfolioAnalysisCard,
   portfolioCompareCard,
   portfolioConfirmCard,
@@ -57,6 +59,7 @@ import {
 import { deleteSession, setSession } from './session.js';
 import { extractPortfolio, fetchLineImage } from './vision.js';
 import { fetchYahooNewsForHoldings } from './news.js';
+import { fetchYahooQuotesForHoldings } from './quotes.js';
 
 const HELP_TH = [
   'คำสั่งที่ใช้ได้:',
@@ -64,6 +67,7 @@ const HELP_TH = [
   '• "พอร์ต" — ดูพอร์ตที่ใช้งานอยู่',
   '• "พอร์ตทั้งหมด" — รายการพอร์ตทั้งหมด เลือก/ลบได้',
   '• "เปลี่ยนชื่อ <ชื่อใหม่>" — เปลี่ยนชื่อพอร์ตที่ใช้งานอยู่',
+  '• "สถานะหุ้น" — ราคาล่าสุด + คำแนะนำรายตัว',
   '• "วิเคราะห์พอร์ต" — ขอความเห็นจาก AI',
   '• "ปรับพอร์ต" — ขอข้อเสนอการ rebalance จาก AI',
   '• "เปรียบเทียบพอร์ต" — เทียบพอร์ตที่ใช้งานกับอันก่อนหน้า',
@@ -389,6 +393,9 @@ async function handleText(ev, env, userId, text) {
   if (cmd === 'portfolio-history') {
     return showPortfolioHistory(ev, env, userId);
   }
+  if (cmd === 'holdings-status') {
+    return showHoldingsStatus(ev, env, userId);
+  }
   if (cmd === 'rename-portfolio') {
     const newName = match.arg;
     if (!newName) {
@@ -454,6 +461,7 @@ async function handleText(ev, env, userId, text) {
     textMsg(answer),
     quickReply('ทำต่อได้เลยครับ', [
       { label: 'พอร์ต' },
+      { label: 'สถานะหุ้น' },
       { label: 'วิเคราะห์พอร์ต' },
       { label: 'ปรับพอร์ต' },
       { label: '/help' },
@@ -467,6 +475,88 @@ async function showPortfolio(ev, env, userId) {
     return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่บันทึกไว้ ส่งภาพหน้าจอพอร์ตจากแอปโบรกเกอร์ของคุณเพื่อเริ่มต้นได้เลยครับ'));
   }
   return reply(env, ev.replyToken, portfolioSummaryCard(active));
+}
+
+async function showHoldingsStatus(ev, env, userId) {
+  const active = await getActivePortfolio(env, userId);
+  if (!active || !active.holdings.length) {
+    return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่ใช้งาน หรือไม่มีหุ้นในพอร์ต — ส่งภาพพอร์ตเพื่อเริ่มต้น'));
+  }
+  await showLoading(env, userId, 25);
+
+  const quotes = await fetchYahooQuotesForHoldings(active.holdings).catch(() => ({}));
+
+  // Build the per-symbol context that goes to Claude.
+  const items = active.holdings.map((h) => {
+    const q = quotes[h.symbol];
+    const price = q?.regular_market_price ?? null;
+    const day_change_pct = q?.regular_market_change_pct ?? null;
+    let pl_pct = null;
+    if (price != null && h.avg_cost != null && h.avg_cost > 0) {
+      pl_pct = ((price - h.avg_cost) / h.avg_cost) * 100;
+    }
+    let distance_from_52w_high_pct = null;
+    if (price != null && q?.fifty_two_week_high != null && q.fifty_two_week_high > 0) {
+      distance_from_52w_high_pct = ((price - q.fifty_two_week_high) / q.fifty_two_week_high) * 100;
+    }
+    return {
+      symbol: h.symbol,
+      current_price: price,
+      day_change_pct,
+      pl_pct,
+      distance_from_52w_high_pct,
+      weight_pct: h.weight_pct ?? null,
+      has_quote: !!q,
+    };
+  });
+
+  let aiResp;
+  try {
+    aiResp = await generateHoldingsStatus(env, items);
+  } catch (err) {
+    console.error('status error', err);
+    await logEvent(env, userId, 'holdings_status_failed', { error: String(err?.message || err).slice(0, 200) });
+    return push(env, userId, textMsg('ขออภัยครับ ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ'));
+  }
+
+  // Merge AI's action+rationale into the price-bearing items keyed by symbol.
+  const aiBySymbol = {};
+  for (const it of (aiResp?.items || [])) {
+    if (!it || !it.symbol) continue;
+    aiBySymbol[String(it.symbol).toUpperCase()] = it;
+  }
+  const merged = items.map((it) => {
+    const ai = aiBySymbol[it.symbol.toUpperCase()] || {};
+    return {
+      ...it,
+      action: ai.action || (it.has_quote ? 'Hold' : 'Watch'),
+      rationale: ai.rationale || null,
+    };
+  });
+
+  const realQuoteCount = items.filter((i) => i.has_quote).length;
+  await logEvent(env, userId, 'holdings_status_requested', {
+    portfolio_id: active.portfolio.id,
+    real_quote_count: realQuoteCount,
+    items: merged.map((m) => ({
+      symbol: m.symbol,
+      action: m.action,
+      day_change_pct: m.day_change_pct,
+      pl_pct: m.pl_pct,
+    })),
+  });
+
+  const asOf = new Intl.DateTimeFormat('th-TH', {
+    timeZone: 'Asia/Bangkok',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date());
+
+  return push(env, userId, holdingsStatusCard({
+    portfolioName: active.portfolio.name || null,
+    items: merged,
+    asOf,
+  }));
 }
 
 async function showPortfolioHistory(ev, env, userId) {
@@ -642,6 +732,8 @@ function matchCommand(text) {
     return { cmd: 'compare-portfolios' };
   if (['ประวัติพอร์ต', 'ประวัติ', 'history', 'portfolio history'].includes(tl))
     return { cmd: 'portfolio-history' };
+  if (['สถานะหุ้น', 'สถานะ', 'status', 'holdings status'].includes(tl))
+    return { cmd: 'holdings-status' };
   if (['ล้างพอร์ต', 'clear portfolio'].includes(tl)) return { cmd: 'clear-portfolio' };
 
   // Arg-bearing commands.

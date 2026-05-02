@@ -143,7 +143,7 @@ Endpoints marked *(CRON_KEY)* require an `Authorization: Bearer ${CRON_KEY}` hea
 | `พอร์ต` / `portfolio` | Show the **active** portfolio summary card |
 | `พอร์ตทั้งหมด` / `portfolios` / `list` | List all saved portfolios (Flex card) — tap **เลือก** to switch active, **ลบ** to delete one |
 | `เปลี่ยนชื่อ <ชื่อใหม่>` / `rename <name>` | Rename the active portfolio |
-| `สถานะหุ้น` / `status` | Live Yahoo Finance price + day change + P&L per held symbol, with a per-symbol AI action label (Hold / Watch / Trim / Add / Alert) |
+| `สถานะหุ้น` / `status` | Live price + day change + P&L per held symbol, with a per-symbol AI action label (Hold / Watch / Trim / Add / Alert). Quotes come from Yahoo Finance with a Stooq.com CSV fallback for symbols Yahoo blocks/misses. |
 | `วิเคราะห์พอร์ต` | AI commentary on the active portfolio |
 | `ปรับพอร์ต` | AI rebalance suggestions on the active portfolio |
 | `เปรียบเทียบพอร์ต` / `compare` | Diff between active portfolio and the most recent non-active one |
@@ -202,7 +202,7 @@ Event types currently emitted from `src/index.js`:
 | `subscribe_news` / `unsubscribe_news` | User opted in/out of the 08:00 news (independent of the 09:00 alert) | `via` |
 | `portfolio_compared` | `เปรียบเทียบพอร์ต` produced a diff | `a_id`, `a_name`, `b_id`, `b_name`, `summary`, `only_in_a`, `only_in_b` |
 | `portfolio_compare_failed` | Comparison errored | `error` |
-| `holdings_status_requested` | `สถานะหุ้น` returned a per-holding status card | `portfolio_id`, `real_quote_count`, `items[{symbol, action, day_change_pct, pl_pct}]` |
+| `holdings_status_requested` | `สถานะหุ้น` returned a per-holding status card | `portfolio_id`, `real_quote_count`, `quote_sources: { yahoo, stooq, none }`, `items[{symbol, action, day_change_pct, pl_pct, source}]` |
 | `holdings_status_failed` | Status command errored | `error` |
 | `portfolio_updated` | User tapped **อัพเดต `<active>`** on the confirm card | `portfolio_id`, `snapshot_id`, `name`, `total_value`, `symbols` |
 

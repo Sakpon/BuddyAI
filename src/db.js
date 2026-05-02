@@ -63,6 +63,29 @@ export async function getSubscribedUsers(env) {
   return (results || []).map((r) => r.user_id);
 }
 
+export async function subscribeNews(env, userId) {
+  await env.DB.prepare(
+    `UPDATE users SET news_subscribed = 1, updated_at = unixepoch() WHERE user_id = ?`,
+  )
+    .bind(userId)
+    .run();
+}
+
+export async function unsubscribeNews(env, userId) {
+  await env.DB.prepare(
+    `UPDATE users SET news_subscribed = 0, updated_at = unixepoch() WHERE user_id = ?`,
+  )
+    .bind(userId)
+    .run();
+}
+
+export async function getNewsSubscribedUsers(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT user_id FROM users WHERE news_subscribed = 1`,
+  ).all();
+  return (results || []).map((r) => r.user_id);
+}
+
 const PENDING_PREFIX = 'pending-portfolio:';
 const PENDING_TTL = 60 * 30;
 
@@ -187,6 +210,27 @@ export async function listPortfolios(env, userId) {
   return results || [];
 }
 
+export async function getPortfolioWithHoldings(env, userId, portfolioId) {
+  const portfolio = await env.DB.prepare(
+    `SELECT id, name, source, total_value, cash, notes, taken_at, is_active
+       FROM portfolios
+      WHERE user_id = ? AND id = ?
+      LIMIT 1`,
+  )
+    .bind(userId, portfolioId)
+    .first();
+  if (!portfolio) return null;
+  const { results } = await env.DB.prepare(
+    `SELECT symbol, quantity, avg_cost, market_price, market_value,
+            unrealized_pl, weight_pct
+       FROM holdings
+      WHERE portfolio_id = ?`,
+  )
+    .bind(portfolio.id)
+    .all();
+  return { portfolio, holdings: results || [] };
+}
+
 export async function setActivePortfolio(env, userId, portfolioId) {
   // Atomic flip via CASE so exactly one row ends up is_active=1.
   const { meta } = await env.DB.prepare(
@@ -245,6 +289,124 @@ export async function clearPortfolios(env, userId) {
     .bind(userId)
     .run();
   await deletePendingPortfolio(env, userId);
+}
+
+// "อัพเดต" flow: take the user's pending extraction and overwrite the given
+// portfolio's totals + holdings with it, while archiving the prior state
+// into portfolio_snapshots. Returns { portfolioId, snapshotId } on success.
+export async function updatePortfolioFromPending(env, userId, portfolioId) {
+  const pending = await getPendingPortfolio(env, userId);
+  if (!pending) return null;
+
+  // Verify the portfolio belongs to this user.
+  const current = await env.DB.prepare(
+    `SELECT id, total_value, cash, notes
+       FROM portfolios
+      WHERE id = ? AND user_id = ?`,
+  )
+    .bind(portfolioId, userId)
+    .first();
+  if (!current) return null;
+
+  // Snapshot current state (totals + holdings as JSON) before overwriting.
+  const { results: currentHoldings } = await env.DB.prepare(
+    `SELECT symbol, quantity, avg_cost, market_price, market_value,
+            unrealized_pl, weight_pct
+       FROM holdings
+      WHERE portfolio_id = ?`,
+  )
+    .bind(portfolioId)
+    .all();
+
+  const snapInsert = await env.DB.prepare(
+    `INSERT INTO portfolio_snapshots (portfolio_id, total_value, cash, notes, holdings_json)
+     VALUES (?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      portfolioId,
+      current.total_value,
+      current.cash,
+      current.notes,
+      JSON.stringify(currentHoldings || []),
+    )
+    .run();
+  const snapshotId = snapInsert?.meta?.last_row_id || null;
+
+  // Overwrite portfolio totals.
+  await env.DB.prepare(
+    `UPDATE portfolios
+        SET source = COALESCE(?, source),
+            total_value = ?,
+            cash = ?,
+            notes = ?,
+            taken_at = unixepoch()
+      WHERE id = ?`,
+  )
+    .bind(
+      pending.source || null,
+      numOrNull(pending.total_value),
+      numOrNull(pending.cash),
+      pending.warnings && pending.warnings.length ? JSON.stringify(pending.warnings) : null,
+      portfolioId,
+    )
+    .run();
+
+  // Replace holdings.
+  await env.DB.prepare(`DELETE FROM holdings WHERE portfolio_id = ?`)
+    .bind(portfolioId)
+    .run();
+
+  const holdings = Array.isArray(pending.holdings) ? pending.holdings : [];
+  for (const h of holdings) {
+    if (!h || !h.symbol) continue;
+    await env.DB.prepare(
+      `INSERT INTO holdings
+        (portfolio_id, symbol, quantity, avg_cost, market_price,
+         market_value, unrealized_pl, weight_pct)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        portfolioId,
+        String(h.symbol).toUpperCase(),
+        numOrNull(h.quantity),
+        numOrNull(h.avg_cost),
+        numOrNull(h.market_price),
+        numOrNull(h.market_value),
+        numOrNull(h.unrealized_pl),
+        numOrNull(h.weight_pct),
+      )
+      .run();
+  }
+
+  await deletePendingPortfolio(env, userId);
+  return { portfolioId, snapshotId };
+}
+
+export async function getPortfolioSnapshots(env, userId, portfolioId, limit = 20) {
+  // Verify ownership cheaply.
+  const owns = await env.DB.prepare(
+    `SELECT 1 FROM portfolios WHERE id = ? AND user_id = ? LIMIT 1`,
+  )
+    .bind(portfolioId, userId)
+    .first();
+  if (!owns) return [];
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, total_value, cash, holdings_json, taken_at
+       FROM portfolio_snapshots
+      WHERE portfolio_id = ?
+      ORDER BY taken_at DESC, id DESC
+      LIMIT ?`,
+  )
+    .bind(portfolioId, limit)
+    .all();
+  return (results || []).map((r) => ({
+    id: r.id,
+    total_value: r.total_value,
+    cash: r.cash,
+    taken_at: r.taken_at,
+    holdings: r.holdings_json ? safeParse(r.holdings_json) : [],
+  }));
 }
 
 export async function logEvent(env, userId, type, payload) {

@@ -3,6 +3,7 @@ import {
   generateDailyNewsForHoldings,
   generatePicksViaClaude,
   generatePortfolioAnalysis,
+  generatePortfolioComparison,
   generatePortfolioRebalance,
 } from './claude.js';
 import {
@@ -14,7 +15,10 @@ import {
   getActivePortfolio,
   getHistory,
   getJourney,
+  getNewsSubscribedUsers,
   getPendingPortfolio,
+  getPortfolioSnapshots,
+  getPortfolioWithHoldings,
   getSubscribedUsers,
   listPortfolios,
   logEvent,
@@ -22,8 +26,11 @@ import {
   savePendingPortfolio,
   saveMessage,
   setActivePortfolio,
+  updatePortfolioFromPending,
   subscribeAlert,
+  subscribeNews,
   unsubscribeAlert,
+  unsubscribeNews,
   upsertUser,
 } from './db.js';
 import { enrollmentCard } from './flex/enrollment.js';
@@ -32,6 +39,7 @@ import { dailyNewsCard } from './flex/news.js';
 import { oilLiffCard, stockLiffCard } from './flex/liffCards.js';
 import {
   portfolioAnalysisCard,
+  portfolioCompareCard,
   portfolioConfirmCard,
   portfolioListCard,
   portfolioRebalanceCard,
@@ -48,6 +56,7 @@ import {
 } from './line.js';
 import { deleteSession, setSession } from './session.js';
 import { extractPortfolio, fetchLineImage } from './vision.js';
+import { fetchYahooNewsForHoldings } from './news.js';
 
 const HELP_TH = [
   'คำสั่งที่ใช้ได้:',
@@ -57,11 +66,15 @@ const HELP_TH = [
   '• "เปลี่ยนชื่อ <ชื่อใหม่>" — เปลี่ยนชื่อพอร์ตที่ใช้งานอยู่',
   '• "วิเคราะห์พอร์ต" — ขอความเห็นจาก AI',
   '• "ปรับพอร์ต" — ขอข้อเสนอการ rebalance จาก AI',
+  '• "เปรียบเทียบพอร์ต" — เทียบพอร์ตที่ใช้งานกับอันก่อนหน้า',
+  '• "ประวัติพอร์ต" — ดูประวัติการอัพเดตของพอร์ตที่ใช้งาน',
   '• "ล้างพอร์ต" — ลบพอร์ตทั้งหมด',
   '• "ดูหุ้น" — เปิด Stock Dashboard',
   '• "ราคาน้ำมัน" — ดูราคาน้ำมันวันนี้',
   '• "สมัครการแจ้งเตือน" — รับหุ้นเด่นทุก 09:00',
   '• "ยกเลิกการแจ้งเตือน"',
+  '• "สมัครข่าว" — รับข่าวพอร์ตทุกเช้า 08:00',
+  '• "ยกเลิกข่าว"',
   '• "/reset" — ล้างประวัติแชท',
   '• "/help" — เมนูช่วยเหลือ',
 ].join('\n');
@@ -229,6 +242,27 @@ async function handlePostback(ev, env, userId) {
     ));
   }
 
+  if (action === 'update-portfolio') {
+    const id = Number(data.get('id'));
+    if (!Number.isFinite(id)) return reply(env, ev.replyToken, textMsg('คำสั่งไม่ถูกต้อง'));
+    const result = await updatePortfolioFromPending(env, userId, id);
+    if (!result) {
+      return reply(env, ev.replyToken, textMsg('ไม่พบพอร์ตหรือหมดเวลายืนยัน ส่งภาพพอร์ตใหม่อีกครั้งนะครับ'));
+    }
+    const updated = await getPortfolioWithHoldings(env, userId, id);
+    await logEvent(env, userId, 'portfolio_updated', {
+      portfolio_id: id,
+      snapshot_id: result.snapshotId,
+      name: updated?.portfolio?.name || null,
+      total_value: updated?.portfolio?.total_value ?? null,
+      symbols: (updated?.holdings || []).map((h) => h.symbol),
+    });
+    return reply(env, ev.replyToken, textMsg(
+      `อัพเดต "${updated?.portfolio?.name || 'พอร์ต'}" เรียบร้อย — เก็บ snapshot เดิมไว้ในประวัติแล้ว\n` +
+      'พิมพ์ "ประวัติพอร์ต" เพื่อดูการเปลี่ยนแปลง',
+    ));
+  }
+
   if (action === 'retry-portfolio') {
     await deletePendingPortfolio(env, userId);
     await logEvent(env, userId, 'portfolio_retry', null);
@@ -288,9 +322,10 @@ async function handleImage(ev, env, userId, messageId) {
     symbols: (extracted.holdings || []).map((h) => h.symbol),
     warnings: extracted.warnings || [],
   });
+  const active = await getActivePortfolio(env, userId).catch(() => null);
   await push(env, userId, [
     textMsg('อ่านพอร์ตจากภาพแล้ว ตรวจสอบความถูกต้องและกดบันทึกเพื่อเริ่มใช้งานได้เลยครับ'),
-    portfolioConfirmCard(extracted),
+    portfolioConfirmCard(extracted, active?.portfolio || null),
   ]);
 }
 
@@ -324,6 +359,17 @@ async function handleText(ev, env, userId, text) {
     await logEvent(env, userId, 'unsubscribe', { via: 'text' });
     return reply(env, ev.replyToken, textMsg('ยกเลิกการแจ้งเตือนแล้ว'));
   }
+  if (cmd === 'subscribe-news') {
+    await upsertUser(env, { userId });
+    await subscribeNews(env, userId);
+    await logEvent(env, userId, 'subscribe_news', { via: 'text' });
+    return reply(env, ev.replyToken, textMsg('สมัครข่าวประจำวันเรียบร้อย รับข่าวสำหรับพอร์ตของคุณทุกเช้า 08:00 (จ-ศ)'));
+  }
+  if (cmd === 'unsubscribe-news') {
+    await unsubscribeNews(env, userId);
+    await logEvent(env, userId, 'unsubscribe_news', { via: 'text' });
+    return reply(env, ev.replyToken, textMsg('ยกเลิกข่าวประจำวันแล้ว'));
+  }
   if (cmd === 'portfolio') {
     return showPortfolio(ev, env, userId);
   }
@@ -336,6 +382,12 @@ async function handleText(ev, env, userId, text) {
   }
   if (cmd === 'rebalance-portfolio') {
     return rebalancePortfolio(ev, env, userId);
+  }
+  if (cmd === 'compare-portfolios') {
+    return comparePortfolios(ev, env, userId);
+  }
+  if (cmd === 'portfolio-history') {
+    return showPortfolioHistory(ev, env, userId);
   }
   if (cmd === 'rename-portfolio') {
     const newName = match.arg;
@@ -417,6 +469,92 @@ async function showPortfolio(ev, env, userId) {
   return reply(env, ev.replyToken, portfolioSummaryCard(active));
 }
 
+async function showPortfolioHistory(ev, env, userId) {
+  const active = await getActivePortfolio(env, userId);
+  if (!active) {
+    return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่ใช้งาน — ส่งภาพพอร์ตเพื่อเริ่มต้น'));
+  }
+  const snapshots = await getPortfolioSnapshots(env, userId, active.portfolio.id, 20);
+  if (!snapshots.length) {
+    return reply(env, ev.replyToken, textMsg(
+      `"${active.portfolio.name}" ยังไม่มีประวัติการอัพเดต\nครั้งต่อไปที่ส่งภาพ ให้กด "อัพเดต" เพื่อเก็บ snapshot ไว้ดูย้อนหลังได้`,
+    ));
+  }
+
+  const lines = [`ประวัติของ "${active.portfolio.name}"`, ''];
+  // Current state at the top.
+  lines.push(`• ${formatTakenAt(active.portfolio.taken_at)} (ปัจจุบัน) — ${formatMoney(active.portfolio.total_value)}`);
+  for (const s of snapshots) {
+    lines.push(`• ${formatTakenAt(s.taken_at)} — ${formatMoney(s.total_value)} (${(s.holdings || []).length} ตัว)`);
+  }
+  return reply(env, ev.replyToken, textMsg(lines.join('\n')));
+}
+
+function formatTakenAt(unix) {
+  if (!unix) return '—';
+  return new Intl.DateTimeFormat('th-TH', {
+    timeZone: 'Asia/Bangkok',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(unix * 1000));
+}
+
+function formatMoney(n) {
+  if (n == null) return '—';
+  const v = Number(n);
+  if (!Number.isFinite(v)) return String(n);
+  return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
+async function comparePortfolios(ev, env, userId) {
+  const all = await listPortfolios(env, userId);
+  if (all.length < 2) {
+    return reply(env, ev.replyToken, textMsg('ต้องมีพอร์ตอย่างน้อย 2 รายการเพื่อเปรียบเทียบ ส่งภาพพอร์ตอีกอันเพื่อเริ่มต้น'));
+  }
+  // Compare active vs the most recent inactive.
+  const activeMeta = all.find((p) => p.is_active === 1) || all[0];
+  const otherMeta = all.find((p) => p.id !== activeMeta.id);
+  if (!otherMeta) {
+    return reply(env, ev.replyToken, textMsg('ต้องมีพอร์ตอย่างน้อย 2 รายการเพื่อเปรียบเทียบ'));
+  }
+
+  await showLoading(env, userId, 25);
+  const [a, b] = await Promise.all([
+    getPortfolioWithHoldings(env, userId, activeMeta.id),
+    getPortfolioWithHoldings(env, userId, otherMeta.id),
+  ]);
+  if (!a || !b) {
+    return push(env, userId, textMsg('ขออภัย ดึงข้อมูลพอร์ตไม่สำเร็จ ลองใหม่อีกครั้งนะครับ'));
+  }
+
+  let comparison;
+  try {
+    comparison = await generatePortfolioComparison(env, a, b);
+  } catch (err) {
+    console.error('compare error', err);
+    await logEvent(env, userId, 'portfolio_compare_failed', { error: String(err?.message || err).slice(0, 200) });
+    return push(env, userId, textMsg('ขออภัยครับ ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ'));
+  }
+
+  await logEvent(env, userId, 'portfolio_compared', {
+    a_id: a.portfolio.id,
+    a_name: a.portfolio.name,
+    b_id: b.portfolio.id,
+    b_name: b.portfolio.name,
+    summary: comparison?.summary || null,
+    only_in_a: comparison?.only_in_a || [],
+    only_in_b: comparison?.only_in_b || [],
+  });
+
+  if (comparison && (comparison.summary || comparison.only_in_a?.length || comparison.only_in_b?.length || comparison.common?.length)) {
+    return push(env, userId, portfolioCompareCard({ a, b, comparison }));
+  }
+  return push(env, userId, textMsg('ขออภัยครับ ระบบประมวลผลการเปรียบเทียบไม่สำเร็จ ลองใหม่อีกครั้งนะครับ'));
+}
+
 async function rebalancePortfolio(ev, env, userId) {
   const active = await getActivePortfolio(env, userId);
   if (!active) {
@@ -491,6 +629,8 @@ function matchCommand(text) {
   if (['ราคาน้ำมัน', 'น้ำมัน', 'oil'].includes(tl)) return { cmd: 'oil' };
   if (tl === 'สมัครการแจ้งเตือน') return { cmd: 'subscribe' };
   if (tl === 'ยกเลิกการแจ้งเตือน') return { cmd: 'unsubscribe' };
+  if (['สมัครข่าว', 'subscribe news'].includes(tl)) return { cmd: 'subscribe-news' };
+  if (['ยกเลิกข่าว', 'unsubscribe news'].includes(tl)) return { cmd: 'unsubscribe-news' };
   if (['พอร์ต', 'portfolio'].includes(tl)) return { cmd: 'portfolio' };
   if (['พอร์ตทั้งหมด', 'รายการพอร์ต', 'portfolios', 'list portfolios', 'list'].includes(tl))
     return { cmd: 'list-portfolios' };
@@ -498,6 +638,10 @@ function matchCommand(text) {
     return { cmd: 'analyse-portfolio' };
   if (['ปรับพอร์ต', 'rebalance', 'rebalance portfolio'].includes(tl))
     return { cmd: 'rebalance-portfolio' };
+  if (['เปรียบเทียบพอร์ต', 'เทียบพอร์ต', 'compare', 'compare portfolios'].includes(tl))
+    return { cmd: 'compare-portfolios' };
+  if (['ประวัติพอร์ต', 'ประวัติ', 'history', 'portfolio history'].includes(tl))
+    return { cmd: 'portfolio-history' };
   if (['ล้างพอร์ต', 'clear portfolio'].includes(tl)) return { cmd: 'clear-portfolio' };
 
   // Arg-bearing commands.
@@ -586,7 +730,7 @@ async function sendDailyNews(env) {
   let error = null;
 
   try {
-    const subs = await getSubscribedUsers(env);
+    const subs = await getNewsSubscribedUsers(env);
     if (!subs.length) {
       await env.SESSION_KV.put(
         'news:last-run',
@@ -606,9 +750,12 @@ async function sendDailyNews(env) {
         continue;
       }
 
+      const headlines = await fetchYahooNewsForHoldings(active.holdings).catch(() => ({}));
+      const realHeadlineCount = Object.values(headlines).reduce((n, arr) => n + (arr?.length || 0), 0);
+
       let news;
       try {
-        news = await generateDailyNewsForHoldings(env, active.holdings);
+        news = await generateDailyNewsForHoldings(env, active.holdings, headlines);
       } catch (err) {
         console.error('news error', userId, err);
         await logEvent(env, userId, 'daily_news_failed', {
@@ -636,10 +783,12 @@ async function sendDailyNews(env) {
           date,
           portfolio_id: active.portfolio.id,
           summary: news.summary || null,
+          real_headline_count: realHeadlineCount,
           items: (news.items || []).map((it) => ({
             symbol: it.symbol,
             action: it.action,
             headline: it.headline,
+            from_real_headline: !!it.from_real_headline,
           })),
         });
       } else {

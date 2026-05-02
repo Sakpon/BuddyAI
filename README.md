@@ -103,11 +103,23 @@ Bangkok) and sends a `Bearer ${CRON_KEY}` request to the worker's
 because CF cron triggers are quota-limited per account.
 
 `daily-news.yml` runs at 01:00 UTC = 08:00 Bangkok, Mon–Fri, and hits
-`/test-news`. For every alert subscriber that also has an active portfolio,
-the worker asks Claude for 3–5 thematic news items per held symbol — each
-with a coloured action label (Positive / Watch / Hold / Alert) and a one-line
-recommendation — and pushes the digest as a Flex card. Users with no
-portfolio still get the generic stock-picks alert at 09:00.
+`/test-news`. For every news subscriber (`news_subscribed = 1`) that also has
+an active portfolio, the worker:
+1. Fetches up to 3 real headlines per held symbol from Yahoo Finance's
+   unofficial JSON search endpoint (`src/news.js`). Symbols are tried as-is,
+   then `.BK` (SET), then `.HK` (HKEX with leading-zero variant).
+2. Passes those headlines into Claude as "บริบท" and asks for 3–5
+   per-portfolio items, each tagged `from_real_headline: true|false` so we
+   know which were grounded vs. thematic.
+3. Pushes the digest as a Flex card with coloured action labels (Positive /
+   Watch / Hold / Alert) and a tinted recommendation block.
+
+If Yahoo returns nothing for any symbol, Claude falls back to its previous
+sector/macro themes — graceful degradation, no failures surface to the user.
+
+The 08:00 news opt-in (`news_subscribed`) is **separate** from the 09:00
+alert opt-in (`alert_subscribed`). Existing alert subscribers were
+auto-opted into news at migration time so behaviour didn't regress.
 
 ## Routes
 
@@ -127,13 +139,16 @@ Endpoints marked *(CRON_KEY)* require an `Authorization: Bearer ${CRON_KEY}` hea
 
 | User input | Action |
 |---|---|
-| *(image)* | Send a portfolio screenshot → Claude vision extracts holdings → user taps **บันทึกพอร์ต** to confirm. Portfolio is auto-named `<source> · <day>` and becomes the active one. |
+| *(image)* | Send a portfolio screenshot. Confirm card offers **บันทึกเป็นพอร์ตใหม่** or **อัพเดต `<activeName>`** (latter archives the current state into the snapshot history). |
 | `พอร์ต` / `portfolio` | Show the **active** portfolio summary card |
 | `พอร์ตทั้งหมด` / `portfolios` / `list` | List all saved portfolios (Flex card) — tap **เลือก** to switch active, **ลบ** to delete one |
 | `เปลี่ยนชื่อ <ชื่อใหม่>` / `rename <name>` | Rename the active portfolio |
 | `วิเคราะห์พอร์ต` | AI commentary on the active portfolio |
 | `ปรับพอร์ต` | AI rebalance suggestions on the active portfolio |
+| `เปรียบเทียบพอร์ต` / `compare` | Diff between active portfolio and the most recent non-active one |
+| `ประวัติพอร์ต` / `history` | Timeline of past snapshots of the active portfolio |
 | `ล้างพอร์ต` | Delete **all** saved portfolios |
+| `สมัครข่าว` / `ยกเลิกข่าว` | Independently opt in/out of the 08:00 portfolio-news job |
 | `ดูหุ้น` / `หุ้น` / `stock` | Open Stock Dashboard (LIFF) |
 | `ราคาน้ำมัน` / `น้ำมัน` / `oil` | Open Oil Dashboard (LIFF) |
 | `สมัครการแจ้งเตือน` | Subscribe to daily alert (becomes portfolio-aware once a portfolio is saved) |
@@ -180,9 +195,13 @@ Event types currently emitted from `src/index.js`:
 | `portfolio_rebalance_failed` | Claude/AI Gateway error during rebalance | `error` |
 | `daily_alert_sent` | Daily cron pushed the card to a subscriber | `date`, `personalised`, `summary`, `picks[]` |
 | `daily_alert_failed` | Per-user push or pick-generation failed | `stage`, `error` |
-| `daily_news_sent` | Daily news cron pushed the per-portfolio digest | `date`, `portfolio_id`, `summary`, `items[{symbol,action,headline}]` |
+| `daily_news_sent` | Daily news cron pushed the per-portfolio digest | `date`, `portfolio_id`, `summary`, `real_headline_count`, `items[{symbol,action,headline,from_real_headline}]` |
 | `daily_news_empty` | Subscriber has a portfolio but Claude returned no news items | `portfolio_id` |
 | `daily_news_failed` | Per-user news generate/push failed | `stage`, `error` |
+| `subscribe_news` / `unsubscribe_news` | User opted in/out of the 08:00 news (independent of the 09:00 alert) | `via` |
+| `portfolio_compared` | `เปรียบเทียบพอร์ต` produced a diff | `a_id`, `a_name`, `b_id`, `b_name`, `summary`, `only_in_a`, `only_in_b` |
+| `portfolio_compare_failed` | Comparison errored | `error` |
+| `portfolio_updated` | User tapped **อัพเดต `<active>`** on the confirm card | `portfolio_id`, `snapshot_id`, `name`, `total_value`, `symbols` |
 
 Read a user's timeline:
 ```bash

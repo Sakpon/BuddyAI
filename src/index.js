@@ -17,6 +17,7 @@ import {
   getJourney,
   getNewsSubscribedUsers,
   getPendingPortfolio,
+  getPortfolioSnapshots,
   getPortfolioWithHoldings,
   getSubscribedUsers,
   listPortfolios,
@@ -25,6 +26,7 @@ import {
   savePendingPortfolio,
   saveMessage,
   setActivePortfolio,
+  updatePortfolioFromPending,
   subscribeAlert,
   subscribeNews,
   unsubscribeAlert,
@@ -65,6 +67,7 @@ const HELP_TH = [
   '• "วิเคราะห์พอร์ต" — ขอความเห็นจาก AI',
   '• "ปรับพอร์ต" — ขอข้อเสนอการ rebalance จาก AI',
   '• "เปรียบเทียบพอร์ต" — เทียบพอร์ตที่ใช้งานกับอันก่อนหน้า',
+  '• "ประวัติพอร์ต" — ดูประวัติการอัพเดตของพอร์ตที่ใช้งาน',
   '• "ล้างพอร์ต" — ลบพอร์ตทั้งหมด',
   '• "ดูหุ้น" — เปิด Stock Dashboard',
   '• "ราคาน้ำมัน" — ดูราคาน้ำมันวันนี้',
@@ -239,6 +242,27 @@ async function handlePostback(ev, env, userId) {
     ));
   }
 
+  if (action === 'update-portfolio') {
+    const id = Number(data.get('id'));
+    if (!Number.isFinite(id)) return reply(env, ev.replyToken, textMsg('คำสั่งไม่ถูกต้อง'));
+    const result = await updatePortfolioFromPending(env, userId, id);
+    if (!result) {
+      return reply(env, ev.replyToken, textMsg('ไม่พบพอร์ตหรือหมดเวลายืนยัน ส่งภาพพอร์ตใหม่อีกครั้งนะครับ'));
+    }
+    const updated = await getPortfolioWithHoldings(env, userId, id);
+    await logEvent(env, userId, 'portfolio_updated', {
+      portfolio_id: id,
+      snapshot_id: result.snapshotId,
+      name: updated?.portfolio?.name || null,
+      total_value: updated?.portfolio?.total_value ?? null,
+      symbols: (updated?.holdings || []).map((h) => h.symbol),
+    });
+    return reply(env, ev.replyToken, textMsg(
+      `อัพเดต "${updated?.portfolio?.name || 'พอร์ต'}" เรียบร้อย — เก็บ snapshot เดิมไว้ในประวัติแล้ว\n` +
+      'พิมพ์ "ประวัติพอร์ต" เพื่อดูการเปลี่ยนแปลง',
+    ));
+  }
+
   if (action === 'retry-portfolio') {
     await deletePendingPortfolio(env, userId);
     await logEvent(env, userId, 'portfolio_retry', null);
@@ -298,9 +322,10 @@ async function handleImage(ev, env, userId, messageId) {
     symbols: (extracted.holdings || []).map((h) => h.symbol),
     warnings: extracted.warnings || [],
   });
+  const active = await getActivePortfolio(env, userId).catch(() => null);
   await push(env, userId, [
     textMsg('อ่านพอร์ตจากภาพแล้ว ตรวจสอบความถูกต้องและกดบันทึกเพื่อเริ่มใช้งานได้เลยครับ'),
-    portfolioConfirmCard(extracted),
+    portfolioConfirmCard(extracted, active?.portfolio || null),
   ]);
 }
 
@@ -360,6 +385,9 @@ async function handleText(ev, env, userId, text) {
   }
   if (cmd === 'compare-portfolios') {
     return comparePortfolios(ev, env, userId);
+  }
+  if (cmd === 'portfolio-history') {
+    return showPortfolioHistory(ev, env, userId);
   }
   if (cmd === 'rename-portfolio') {
     const newName = match.arg;
@@ -439,6 +467,46 @@ async function showPortfolio(ev, env, userId) {
     return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่บันทึกไว้ ส่งภาพหน้าจอพอร์ตจากแอปโบรกเกอร์ของคุณเพื่อเริ่มต้นได้เลยครับ'));
   }
   return reply(env, ev.replyToken, portfolioSummaryCard(active));
+}
+
+async function showPortfolioHistory(ev, env, userId) {
+  const active = await getActivePortfolio(env, userId);
+  if (!active) {
+    return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่ใช้งาน — ส่งภาพพอร์ตเพื่อเริ่มต้น'));
+  }
+  const snapshots = await getPortfolioSnapshots(env, userId, active.portfolio.id, 20);
+  if (!snapshots.length) {
+    return reply(env, ev.replyToken, textMsg(
+      `"${active.portfolio.name}" ยังไม่มีประวัติการอัพเดต\nครั้งต่อไปที่ส่งภาพ ให้กด "อัพเดต" เพื่อเก็บ snapshot ไว้ดูย้อนหลังได้`,
+    ));
+  }
+
+  const lines = [`ประวัติของ "${active.portfolio.name}"`, ''];
+  // Current state at the top.
+  lines.push(`• ${formatTakenAt(active.portfolio.taken_at)} (ปัจจุบัน) — ${formatMoney(active.portfolio.total_value)}`);
+  for (const s of snapshots) {
+    lines.push(`• ${formatTakenAt(s.taken_at)} — ${formatMoney(s.total_value)} (${(s.holdings || []).length} ตัว)`);
+  }
+  return reply(env, ev.replyToken, textMsg(lines.join('\n')));
+}
+
+function formatTakenAt(unix) {
+  if (!unix) return '—';
+  return new Intl.DateTimeFormat('th-TH', {
+    timeZone: 'Asia/Bangkok',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(unix * 1000));
+}
+
+function formatMoney(n) {
+  if (n == null) return '—';
+  const v = Number(n);
+  if (!Number.isFinite(v)) return String(n);
+  return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
 
 async function comparePortfolios(ev, env, userId) {
@@ -572,6 +640,8 @@ function matchCommand(text) {
     return { cmd: 'rebalance-portfolio' };
   if (['เปรียบเทียบพอร์ต', 'เทียบพอร์ต', 'compare', 'compare portfolios'].includes(tl))
     return { cmd: 'compare-portfolios' };
+  if (['ประวัติพอร์ต', 'ประวัติ', 'history', 'portfolio history'].includes(tl))
+    return { cmd: 'portfolio-history' };
   if (['ล้างพอร์ต', 'clear portfolio'].includes(tl)) return { cmd: 'clear-portfolio' };
 
   // Arg-bearing commands.

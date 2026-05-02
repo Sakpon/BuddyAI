@@ -1,9 +1,23 @@
-export function portfolioConfirmCard(extracted) {
+export function portfolioConfirmCard(extracted, activePortfolio) {
   const holdings = (extracted.holdings || []).slice(0, 10);
   const warnings = extracted.warnings || [];
   const rows = holdings.map((h) => holdingRow(h, false));
   const tail = (extracted.holdings || []).length > 10
     ? [{ type: 'text', text: `+ อีก ${extracted.holdings.length - 10} ตัว`, size: 'xs', color: '#94A3B8', margin: 'sm' }]
+    : [];
+
+  const updateButton = activePortfolio
+    ? [{
+        type: 'button',
+        style: 'primary',
+        color: '#0EA5E9',
+        action: {
+          type: 'postback',
+          label: `อัพเดต "${(activePortfolio.name || 'พอร์ต').slice(0, 20)}"`,
+          data: `action=update-portfolio&id=${activePortfolio.id}`,
+          displayText: `อัพเดต "${(activePortfolio.name || 'พอร์ต').slice(0, 20)}"`,
+        },
+      }]
     : [];
 
   return {
@@ -48,11 +62,12 @@ export function portfolioConfirmCard(extracted) {
             color: '#16A34A',
             action: {
               type: 'postback',
-              label: 'บันทึกพอร์ต',
+              label: 'บันทึกเป็นพอร์ตใหม่',
               data: 'action=confirm-portfolio',
-              displayText: 'บันทึกพอร์ต',
+              displayText: 'บันทึกเป็นพอร์ตใหม่',
             },
           },
+          ...updateButton,
           {
             type: 'button',
             style: 'secondary',

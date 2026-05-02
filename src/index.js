@@ -48,6 +48,7 @@ import {
 } from './line.js';
 import { deleteSession, setSession } from './session.js';
 import { extractPortfolio, fetchLineImage } from './vision.js';
+import { fetchYahooNewsForHoldings } from './news.js';
 
 const HELP_TH = [
   'คำสั่งที่ใช้ได้:',
@@ -606,9 +607,12 @@ async function sendDailyNews(env) {
         continue;
       }
 
+      const headlines = await fetchYahooNewsForHoldings(active.holdings).catch(() => ({}));
+      const realHeadlineCount = Object.values(headlines).reduce((n, arr) => n + (arr?.length || 0), 0);
+
       let news;
       try {
-        news = await generateDailyNewsForHoldings(env, active.holdings);
+        news = await generateDailyNewsForHoldings(env, active.holdings, headlines);
       } catch (err) {
         console.error('news error', userId, err);
         await logEvent(env, userId, 'daily_news_failed', {
@@ -636,10 +640,12 @@ async function sendDailyNews(env) {
           date,
           portfolio_id: active.portfolio.id,
           summary: news.summary || null,
+          real_headline_count: realHeadlineCount,
           items: (news.items || []).map((it) => ({
             symbol: it.symbol,
             action: it.action,
             headline: it.headline,
+            from_real_headline: !!it.from_real_headline,
           })),
         });
       } else {

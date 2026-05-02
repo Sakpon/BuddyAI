@@ -118,14 +118,32 @@ export async function generatePortfolioRebalance(env, portfolio, holdings) {
   return parseJsonLoose(raw);
 }
 
-export async function generateDailyNewsForHoldings(env, holdings) {
+export async function generateDailyNewsForHoldings(env, holdings, headlinesBySymbol) {
   if (!holdings || !holdings.length) return null;
   const symbolList = holdings.map((h) => h.symbol).filter(Boolean).slice(0, 12).join(', ');
+
+  // Build a real-headlines context block if the caller fetched any.
+  const headlineLines = [];
+  if (headlinesBySymbol && typeof headlinesBySymbol === 'object') {
+    for (const [sym, items] of Object.entries(headlinesBySymbol)) {
+      if (!Array.isArray(items) || !items.length) continue;
+      headlineLines.push(`[${sym}]`);
+      for (const it of items.slice(0, 3)) {
+        const line = '- ' + (it.title || '').replace(/\s+/g, ' ').trim();
+        headlineLines.push(line.slice(0, 220));
+      }
+    }
+  }
+  const headlinesBlock = headlineLines.length
+    ? '\n\nหัวข้อข่าวจริงล่าสุด (จาก Yahoo Finance) ใช้เป็น "บริบท" — สรุปและตีความให้เข้ากับพอร์ต อย่าก๊อปวลีตรงๆ:\n' + headlineLines.join('\n')
+    : '';
+
   const prompt = [
     {
       role: 'user',
       content:
-        'หุ้น/ETF ที่ผู้ใช้ถือ: ' + symbolList + '\n\n' +
+        'หุ้น/ETF ที่ผู้ใช้ถือ: ' + symbolList +
+        headlinesBlock + '\n\n' +
         'ในฐานะ FinBot สรุปประเด็น ข่าว/ปัจจัยมหภาค/sector themes ที่อาจกระทบราคาในวันนี้ ' +
         '(รายตัว — เลือกที่เด่นที่สุด 3-5 ตัวเท่านั้น ไม่จำเป็นต้องครบทุก symbol)\n\n' +
         'ตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่น:\n' +
@@ -137,15 +155,17 @@ export async function generateDailyNewsForHoldings(env, holdings) {
         '      "headline": "<หัวข้อสั้น 1 บรรทัด>",\n' +
         '      "summary": "<1-2 ประโยคบอกบริบท>",\n' +
         '      "action": "Watch" | "Alert" | "Positive" | "Hold",\n' +
-        '      "recommendation": "<สั้น เชิงพิจารณา ไม่ใช่คำสั่งซื้อขาย>"\n' +
+        '      "recommendation": "<สั้น เชิงพิจารณา ไม่ใช่คำสั่งซื้อขาย>",\n' +
+        '      "from_real_headline": <true ถ้าอ้างอิง Yahoo headline ด้านบน, false ถ้าเป็น sector/theme เอง>\n' +
         '    }\n' +
         '  ]\n' +
         '}\n\n' +
         'กฎ:\n' +
         '- ภาษาไทย ยกเว้น action (Watch/Alert/Positive/Hold)\n' +
         '- ห้ามให้คำสั่ง "ซื้อ/ขาย" — ใช้ "เฝ้าดู", "พิจารณาลดสัดส่วน", "ติดตามผลประกอบการ"\n' +
-        '- ไม่ใช้ราคาเรียลไทม์ ไม่อ้างวันที่เฉพาะเจาะจง — เน้นปัจจัยพื้นฐาน/sector/macro/geopolitics\n' +
-        '- 3-5 items เท่านั้น เลือกที่ "อาจส่งผลวันนี้" ที่สุด\n' +
+        '- ถ้ามี real headlines ด้านบน ให้ "from_real_headline": true และอิงเนื้อหา\n' +
+        '- ถ้าไม่มี ให้ "from_real_headline": false และอิง sector/macro แทน\n' +
+        '- 3-5 items, เลือกที่ "อาจส่งผลวันนี้" ที่สุด\n' +
         '- ตอบสั้นกระชับ ไม่เกิน 1500 tokens',
     },
   ];

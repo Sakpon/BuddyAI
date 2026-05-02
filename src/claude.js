@@ -78,6 +78,38 @@ export async function generatePortfolioAnalysis(env, portfolio, holdings) {
   return parseJsonLoose(raw);
 }
 
+export async function generatePortfolioComparison(env, a, b) {
+  // a, b: { portfolio, holdings }
+  const aText = portfolioToText(a.portfolio, a.holdings);
+  const bText = portfolioToText(b.portfolio, b.holdings);
+  const prompt = [
+    {
+      role: 'user',
+      content:
+        'เปรียบเทียบสองพอร์ตนี้ ตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่น:\n\n' +
+        `### A: ${a.portfolio.name || 'A'}\n${aText}\n\n` +
+        `### B: ${b.portfolio.name || 'B'}\n${bText}\n\n` +
+        'รูปแบบ:\n' +
+        '{\n' +
+        '  "summary": "<1-2 ประโยคสรุปความต่างหลัก>",\n' +
+        '  "value_delta": "<พูดถึง total_value ของ A เทียบ B สั้นๆ>",\n' +
+        '  "only_in_a": [ "<symbol>" ],\n' +
+        '  "only_in_b": [ "<symbol>" ],\n' +
+        '  "common": [ { "symbol": "<sym>", "note": "<ต่างกันยังไง 1 ประโยค>" } ],\n' +
+        '  "sector_diff": [ "<กลุ่มอุตสาหกรรมที่ต่างกันชัด>" ],\n' +
+        '  "insights": [ "<ข้อสังเกต 2-3 ข้อ ภาษาไทย>" ]\n' +
+        '}\n\n' +
+        'กฎ:\n' +
+        '- ภาษาไทยทั้งหมด\n' +
+        '- เทียบเชิงโครงสร้าง (sector, น้ำหนัก, ความเสี่ยง) ไม่ใช่เชิงพยากรณ์ราคา\n' +
+        '- ห้ามแนะนำ "ซื้อ/ขาย"\n' +
+        '- ตอบสั้น ไม่เกิน 1500 tokens',
+    },
+  ];
+  const raw = await askClaude(prompt, env, { maxTokens: 1800 });
+  return parseJsonLoose(raw);
+}
+
 export async function generatePortfolioRebalance(env, portfolio, holdings) {
   const summary = portfolioToText(portfolio, holdings);
   const prompt = [

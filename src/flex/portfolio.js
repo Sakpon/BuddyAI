@@ -494,6 +494,114 @@ function rebalanceRow(s) {
   };
 }
 
+export function portfolioCompareCard({ a, b, comparison }) {
+  const c = comparison || {};
+  const onlyA = (c.only_in_a || []).slice(0, 8);
+  const onlyB = (c.only_in_b || []).slice(0, 8);
+  const common = (c.common || []).slice(0, 6);
+  const insights = (c.insights || []).slice(0, 3);
+  const sectorDiff = (c.sector_diff || []).slice(0, 5);
+
+  const body = [];
+
+  if (c.summary) {
+    body.push({
+      type: 'text',
+      text: c.summary,
+      wrap: true,
+      weight: 'bold',
+      size: 'sm',
+      color: '#0F172A',
+    });
+  }
+  if (c.value_delta) {
+    body.push({
+      type: 'text',
+      text: c.value_delta,
+      wrap: true,
+      size: 'xs',
+      color: '#475569',
+    });
+  }
+
+  body.push({ type: 'separator', margin: 'md' });
+  body.push({
+    type: 'box',
+    layout: 'horizontal',
+    margin: 'sm',
+    contents: [
+      { type: 'text', text: a.portfolio.name || 'A', size: 'xs', weight: 'bold', color: '#0EA5E9', flex: 1 },
+      { type: 'text', text: 'vs', size: 'xs', color: '#94A3B8', align: 'center', flex: 0 },
+      { type: 'text', text: b.portfolio.name || 'B', size: 'xs', weight: 'bold', color: '#16A34A', align: 'end', flex: 1 },
+    ],
+  });
+
+  if (onlyA.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'มีเฉพาะใน A', weight: 'bold', size: 'sm', color: '#0EA5E9', margin: 'md' });
+    body.push({ type: 'text', text: onlyA.join(' · '), wrap: true, size: 'xs', color: '#1E293B' });
+  }
+  if (onlyB.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'มีเฉพาะใน B', weight: 'bold', size: 'sm', color: '#16A34A', margin: 'md' });
+    body.push({ type: 'text', text: onlyB.join(' · '), wrap: true, size: 'xs', color: '#1E293B' });
+  }
+  if (common.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'มีในทั้งสอง', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    for (const it of common) {
+      body.push({
+        type: 'box',
+        layout: 'vertical',
+        margin: 'sm',
+        contents: [
+          { type: 'text', text: it.symbol || '?', size: 'sm', weight: 'bold', color: '#0F172A' },
+          ...(it.note
+            ? [{ type: 'text', text: it.note, wrap: true, size: 'xs', color: '#475569' }]
+            : []),
+        ],
+      });
+    }
+  }
+  if (sectorDiff.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'กลุ่มต่างกัน', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    body.push({ type: 'text', text: '• ' + sectorDiff.join('\n• '), wrap: true, size: 'xs', color: '#1E293B' });
+  }
+  if (insights.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'ข้อสังเกต', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    for (const ins of insights) {
+      body.push({ type: 'text', text: '• ' + ins, wrap: true, size: 'xs', color: '#1E293B' });
+    }
+  }
+
+  return {
+    type: 'flex',
+    altText: 'เปรียบเทียบพอร์ต',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: hero('เปรียบเทียบพอร์ต', `${a.portfolio.name || 'A'} vs ${b.portfolio.name || 'B'}`),
+      body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'text',
+            text: 'ข้อมูลเชิงการศึกษา ไม่ใช่คำแนะนำการลงทุน',
+            size: 'xxs',
+            color: '#94A3B8',
+            align: 'center',
+            wrap: true,
+          },
+        ],
+      },
+    },
+  };
+}
+
 export function portfolioListCard(portfolios) {
   const rows = (portfolios || []).slice(0, 8).map((p) => portfolioListRow(p));
   const tail = (portfolios || []).length > 8

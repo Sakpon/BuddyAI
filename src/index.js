@@ -3,6 +3,7 @@ import {
   generateDailyNewsForHoldings,
   generatePicksViaClaude,
   generatePortfolioAnalysis,
+  generatePortfolioComparison,
   generatePortfolioRebalance,
 } from './claude.js';
 import {
@@ -16,6 +17,7 @@ import {
   getJourney,
   getNewsSubscribedUsers,
   getPendingPortfolio,
+  getPortfolioWithHoldings,
   getSubscribedUsers,
   listPortfolios,
   logEvent,
@@ -35,6 +37,7 @@ import { dailyNewsCard } from './flex/news.js';
 import { oilLiffCard, stockLiffCard } from './flex/liffCards.js';
 import {
   portfolioAnalysisCard,
+  portfolioCompareCard,
   portfolioConfirmCard,
   portfolioListCard,
   portfolioRebalanceCard,
@@ -61,6 +64,7 @@ const HELP_TH = [
   '• "เปลี่ยนชื่อ <ชื่อใหม่>" — เปลี่ยนชื่อพอร์ตที่ใช้งานอยู่',
   '• "วิเคราะห์พอร์ต" — ขอความเห็นจาก AI',
   '• "ปรับพอร์ต" — ขอข้อเสนอการ rebalance จาก AI',
+  '• "เปรียบเทียบพอร์ต" — เทียบพอร์ตที่ใช้งานกับอันก่อนหน้า',
   '• "ล้างพอร์ต" — ลบพอร์ตทั้งหมด',
   '• "ดูหุ้น" — เปิด Stock Dashboard',
   '• "ราคาน้ำมัน" — ดูราคาน้ำมันวันนี้',
@@ -354,6 +358,9 @@ async function handleText(ev, env, userId, text) {
   if (cmd === 'rebalance-portfolio') {
     return rebalancePortfolio(ev, env, userId);
   }
+  if (cmd === 'compare-portfolios') {
+    return comparePortfolios(ev, env, userId);
+  }
   if (cmd === 'rename-portfolio') {
     const newName = match.arg;
     if (!newName) {
@@ -432,6 +439,52 @@ async function showPortfolio(ev, env, userId) {
     return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่บันทึกไว้ ส่งภาพหน้าจอพอร์ตจากแอปโบรกเกอร์ของคุณเพื่อเริ่มต้นได้เลยครับ'));
   }
   return reply(env, ev.replyToken, portfolioSummaryCard(active));
+}
+
+async function comparePortfolios(ev, env, userId) {
+  const all = await listPortfolios(env, userId);
+  if (all.length < 2) {
+    return reply(env, ev.replyToken, textMsg('ต้องมีพอร์ตอย่างน้อย 2 รายการเพื่อเปรียบเทียบ ส่งภาพพอร์ตอีกอันเพื่อเริ่มต้น'));
+  }
+  // Compare active vs the most recent inactive.
+  const activeMeta = all.find((p) => p.is_active === 1) || all[0];
+  const otherMeta = all.find((p) => p.id !== activeMeta.id);
+  if (!otherMeta) {
+    return reply(env, ev.replyToken, textMsg('ต้องมีพอร์ตอย่างน้อย 2 รายการเพื่อเปรียบเทียบ'));
+  }
+
+  await showLoading(env, userId, 25);
+  const [a, b] = await Promise.all([
+    getPortfolioWithHoldings(env, userId, activeMeta.id),
+    getPortfolioWithHoldings(env, userId, otherMeta.id),
+  ]);
+  if (!a || !b) {
+    return push(env, userId, textMsg('ขออภัย ดึงข้อมูลพอร์ตไม่สำเร็จ ลองใหม่อีกครั้งนะครับ'));
+  }
+
+  let comparison;
+  try {
+    comparison = await generatePortfolioComparison(env, a, b);
+  } catch (err) {
+    console.error('compare error', err);
+    await logEvent(env, userId, 'portfolio_compare_failed', { error: String(err?.message || err).slice(0, 200) });
+    return push(env, userId, textMsg('ขออภัยครับ ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ'));
+  }
+
+  await logEvent(env, userId, 'portfolio_compared', {
+    a_id: a.portfolio.id,
+    a_name: a.portfolio.name,
+    b_id: b.portfolio.id,
+    b_name: b.portfolio.name,
+    summary: comparison?.summary || null,
+    only_in_a: comparison?.only_in_a || [],
+    only_in_b: comparison?.only_in_b || [],
+  });
+
+  if (comparison && (comparison.summary || comparison.only_in_a?.length || comparison.only_in_b?.length || comparison.common?.length)) {
+    return push(env, userId, portfolioCompareCard({ a, b, comparison }));
+  }
+  return push(env, userId, textMsg('ขออภัยครับ ระบบประมวลผลการเปรียบเทียบไม่สำเร็จ ลองใหม่อีกครั้งนะครับ'));
 }
 
 async function rebalancePortfolio(ev, env, userId) {
@@ -517,6 +570,8 @@ function matchCommand(text) {
     return { cmd: 'analyse-portfolio' };
   if (['ปรับพอร์ต', 'rebalance', 'rebalance portfolio'].includes(tl))
     return { cmd: 'rebalance-portfolio' };
+  if (['เปรียบเทียบพอร์ต', 'เทียบพอร์ต', 'compare', 'compare portfolios'].includes(tl))
+    return { cmd: 'compare-portfolios' };
   if (['ล้างพอร์ต', 'clear portfolio'].includes(tl)) return { cmd: 'clear-portfolio' };
 
   // Arg-bearing commands.

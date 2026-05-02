@@ -210,6 +210,27 @@ export async function listPortfolios(env, userId) {
   return results || [];
 }
 
+export async function getPortfolioWithHoldings(env, userId, portfolioId) {
+  const portfolio = await env.DB.prepare(
+    `SELECT id, name, source, total_value, cash, notes, taken_at, is_active
+       FROM portfolios
+      WHERE user_id = ? AND id = ?
+      LIMIT 1`,
+  )
+    .bind(userId, portfolioId)
+    .first();
+  if (!portfolio) return null;
+  const { results } = await env.DB.prepare(
+    `SELECT symbol, quantity, avg_cost, market_price, market_value,
+            unrealized_pl, weight_pct
+       FROM holdings
+      WHERE portfolio_id = ?`,
+  )
+    .bind(portfolio.id)
+    .all();
+  return { portfolio, holdings: results || [] };
+}
+
 export async function setActivePortfolio(env, userId, portfolioId) {
   // Atomic flip via CASE so exactly one row ends up is_active=1.
   const { meta } = await env.DB.prepare(

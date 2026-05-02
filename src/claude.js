@@ -78,6 +78,54 @@ export async function generatePortfolioAnalysis(env, portfolio, holdings) {
   return parseJsonLoose(raw);
 }
 
+// Per-holding "status" recommendation for the สถานะหุ้น command.
+// `items` is an array of:
+//   { symbol, current_price, day_change_pct, pl_pct, distance_from_52w_high_pct,
+//     weight_pct, has_quote }
+// Caller has already merged Yahoo Finance quotes with the user's cost basis.
+export async function generateHoldingsStatus(env, items) {
+  if (!items || !items.length) return null;
+
+  const lines = items.map((it) => {
+    const parts = [`- ${it.symbol}`];
+    if (it.current_price != null) parts.push(`price=${it.current_price}`);
+    if (it.day_change_pct != null) parts.push(`day=${it.day_change_pct.toFixed(2)}%`);
+    if (it.pl_pct != null) parts.push(`pl=${it.pl_pct.toFixed(1)}%`);
+    if (it.distance_from_52w_high_pct != null)
+      parts.push(`vs52w_hi=${it.distance_from_52w_high_pct.toFixed(0)}%`);
+    if (it.weight_pct != null) parts.push(`w=${Math.round(it.weight_pct)}%`);
+    if (!it.has_quote) parts.push('no_realtime_data');
+    return parts.join(' ');
+  });
+
+  const prompt = [
+    {
+      role: 'user',
+      content:
+        'นี่คือสถานะแต่ละตัวที่ผู้ใช้ถือ (รวม snapshot ราคาล่าสุดจาก Yahoo Finance):\n' +
+        lines.join('\n') +
+        '\n\nสำหรับแต่ละ symbol ตอบกลับเป็น JSON เท่านั้น ห้ามมีข้อความอื่น:\n' +
+        '{\n' +
+        '  "items": [\n' +
+        '    {\n' +
+        '      "symbol": "<symbol>",\n' +
+        '      "action": "Hold" | "Watch" | "Trim" | "Add" | "Alert",\n' +
+        '      "rationale": "<1 ประโยคภาษาไทยอธิบายว่าทำไมให้ action นี้>"\n' +
+        '    }\n' +
+        '  ]\n' +
+        '}\n\n' +
+        'กฎ:\n' +
+        '- ภาษาไทย ยกเว้น action (Hold/Watch/Trim/Add/Alert)\n' +
+        '- ใช้ข้อมูล price/day/pl/vs52w_hi ที่ให้มา ไม่จำเป็นต้องเดา\n' +
+        '- ห้ามแนะนำ "ซื้อ/ขาย" ตรงๆ — ใช้ "พิจารณา…", "เฝ้าดู", "ทยอย…"\n' +
+        '- ทุกตัวที่อยู่ใน list ต้องมี item ตอบกลับ (ถ้า no_realtime_data ให้ Hold/Watch + rationale ว่าไม่มีข้อมูลราคา)\n' +
+        '- ตอบสั้น 1500 tokens',
+    },
+  ];
+  const raw = await askClaude(prompt, env, { maxTokens: 1800 });
+  return parseJsonLoose(raw);
+}
+
 export async function generatePortfolioComparison(env, a, b) {
   // a, b: { portfolio, holdings }
   const aText = portfolioToText(a.portfolio, a.holdings);

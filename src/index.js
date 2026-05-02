@@ -60,6 +60,7 @@ import { deleteSession, setSession } from './session.js';
 import { extractPortfolio, fetchLineImage } from './vision.js';
 import { fetchYahooNewsForHoldings } from './news.js';
 import { fetchYahooQuotesForHoldings } from './quotes.js';
+import { fetchStooqQuotesForHoldings } from './stooq.js';
 
 const HELP_TH = [
   'คำสั่งที่ใช้ได้:',
@@ -484,7 +485,19 @@ async function showHoldingsStatus(ev, env, userId) {
   }
   await showLoading(env, userId, 25);
 
-  const quotes = await fetchYahooQuotesForHoldings(active.holdings).catch(() => ({}));
+  // Try Yahoo first; fall back to Stooq for any symbol Yahoo didn't cover.
+  const yahooQuotes = await fetchYahooQuotesForHoldings(active.holdings).catch(() => ({}));
+  const missingForFallback = active.holdings.filter((h) => h.symbol && !yahooQuotes[h.symbol]);
+  const stooqQuotes = missingForFallback.length
+    ? await fetchStooqQuotesForHoldings(missingForFallback).catch(() => ({}))
+    : {};
+
+  const quotes = { ...stooqQuotes, ...yahooQuotes };
+  const sources = {};
+  for (const sym of Object.keys(yahooQuotes)) sources[sym] = 'yahoo';
+  for (const sym of Object.keys(stooqQuotes)) {
+    if (!sources[sym]) sources[sym] = 'stooq';
+  }
 
   // Build the per-symbol context that goes to Claude.
   const items = active.holdings.map((h) => {
@@ -507,6 +520,7 @@ async function showHoldingsStatus(ev, env, userId) {
       distance_from_52w_high_pct,
       weight_pct: h.weight_pct ?? null,
       has_quote: !!q,
+      source: sources[h.symbol] || null,
     };
   });
 
@@ -535,14 +549,18 @@ async function showHoldingsStatus(ev, env, userId) {
   });
 
   const realQuoteCount = items.filter((i) => i.has_quote).length;
+  const yahooCount = items.filter((i) => i.source === 'yahoo').length;
+  const stooqCount = items.filter((i) => i.source === 'stooq').length;
   await logEvent(env, userId, 'holdings_status_requested', {
     portfolio_id: active.portfolio.id,
     real_quote_count: realQuoteCount,
+    quote_sources: { yahoo: yahooCount, stooq: stooqCount, none: items.length - realQuoteCount },
     items: merged.map((m) => ({
       symbol: m.symbol,
       action: m.action,
       day_change_pct: m.day_change_pct,
       pl_pct: m.pl_pct,
+      source: m.source || null,
     })),
   });
 

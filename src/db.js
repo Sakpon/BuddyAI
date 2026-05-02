@@ -63,6 +63,29 @@ export async function getSubscribedUsers(env) {
   return (results || []).map((r) => r.user_id);
 }
 
+export async function subscribeNews(env, userId) {
+  await env.DB.prepare(
+    `UPDATE users SET news_subscribed = 1, updated_at = unixepoch() WHERE user_id = ?`,
+  )
+    .bind(userId)
+    .run();
+}
+
+export async function unsubscribeNews(env, userId) {
+  await env.DB.prepare(
+    `UPDATE users SET news_subscribed = 0, updated_at = unixepoch() WHERE user_id = ?`,
+  )
+    .bind(userId)
+    .run();
+}
+
+export async function getNewsSubscribedUsers(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT user_id FROM users WHERE news_subscribed = 1`,
+  ).all();
+  return (results || []).map((r) => r.user_id);
+}
+
 const PENDING_PREFIX = 'pending-portfolio:';
 const PENDING_TTL = 60 * 30;
 

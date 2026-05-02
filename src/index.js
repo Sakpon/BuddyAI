@@ -14,6 +14,7 @@ import {
   getActivePortfolio,
   getHistory,
   getJourney,
+  getNewsSubscribedUsers,
   getPendingPortfolio,
   getSubscribedUsers,
   listPortfolios,
@@ -23,7 +24,9 @@ import {
   saveMessage,
   setActivePortfolio,
   subscribeAlert,
+  subscribeNews,
   unsubscribeAlert,
+  unsubscribeNews,
   upsertUser,
 } from './db.js';
 import { enrollmentCard } from './flex/enrollment.js';
@@ -63,6 +66,8 @@ const HELP_TH = [
   '• "ราคาน้ำมัน" — ดูราคาน้ำมันวันนี้',
   '• "สมัครการแจ้งเตือน" — รับหุ้นเด่นทุก 09:00',
   '• "ยกเลิกการแจ้งเตือน"',
+  '• "สมัครข่าว" — รับข่าวพอร์ตทุกเช้า 08:00',
+  '• "ยกเลิกข่าว"',
   '• "/reset" — ล้างประวัติแชท',
   '• "/help" — เมนูช่วยเหลือ',
 ].join('\n');
@@ -325,6 +330,17 @@ async function handleText(ev, env, userId, text) {
     await logEvent(env, userId, 'unsubscribe', { via: 'text' });
     return reply(env, ev.replyToken, textMsg('ยกเลิกการแจ้งเตือนแล้ว'));
   }
+  if (cmd === 'subscribe-news') {
+    await upsertUser(env, { userId });
+    await subscribeNews(env, userId);
+    await logEvent(env, userId, 'subscribe_news', { via: 'text' });
+    return reply(env, ev.replyToken, textMsg('สมัครข่าวประจำวันเรียบร้อย รับข่าวสำหรับพอร์ตของคุณทุกเช้า 08:00 (จ-ศ)'));
+  }
+  if (cmd === 'unsubscribe-news') {
+    await unsubscribeNews(env, userId);
+    await logEvent(env, userId, 'unsubscribe_news', { via: 'text' });
+    return reply(env, ev.replyToken, textMsg('ยกเลิกข่าวประจำวันแล้ว'));
+  }
   if (cmd === 'portfolio') {
     return showPortfolio(ev, env, userId);
   }
@@ -492,6 +508,8 @@ function matchCommand(text) {
   if (['ราคาน้ำมัน', 'น้ำมัน', 'oil'].includes(tl)) return { cmd: 'oil' };
   if (tl === 'สมัครการแจ้งเตือน') return { cmd: 'subscribe' };
   if (tl === 'ยกเลิกการแจ้งเตือน') return { cmd: 'unsubscribe' };
+  if (['สมัครข่าว', 'subscribe news'].includes(tl)) return { cmd: 'subscribe-news' };
+  if (['ยกเลิกข่าว', 'unsubscribe news'].includes(tl)) return { cmd: 'unsubscribe-news' };
   if (['พอร์ต', 'portfolio'].includes(tl)) return { cmd: 'portfolio' };
   if (['พอร์ตทั้งหมด', 'รายการพอร์ต', 'portfolios', 'list portfolios', 'list'].includes(tl))
     return { cmd: 'list-portfolios' };
@@ -587,7 +605,7 @@ async function sendDailyNews(env) {
   let error = null;
 
   try {
-    const subs = await getSubscribedUsers(env);
+    const subs = await getNewsSubscribedUsers(env);
     if (!subs.length) {
       await env.SESSION_KV.put(
         'news:last-run',

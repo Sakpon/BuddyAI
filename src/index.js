@@ -59,8 +59,7 @@ import {
 import { deleteSession, setSession } from './session.js';
 import { extractPortfolio, fetchLineImage } from './vision.js';
 import { fetchYahooNewsForHoldings } from './news.js';
-import { fetchYahooQuotesForHoldings } from './quotes.js';
-import { fetchStooqQuotesForHoldings } from './stooq.js';
+import { fetchUnifiedQuotesForHoldings } from './marketdata.js';
 
 const HELP_TH = [
   'คำสั่งที่ใช้ได้:',
@@ -485,19 +484,13 @@ async function showHoldingsStatus(ev, env, userId) {
   }
   await showLoading(env, userId, 25);
 
-  // Try Yahoo first; fall back to Stooq for any symbol Yahoo didn't cover.
-  const yahooQuotes = await fetchYahooQuotesForHoldings(active.holdings).catch(() => ({}));
-  const missingForFallback = active.holdings.filter((h) => h.symbol && !yahooQuotes[h.symbol]);
-  const stooqQuotes = missingForFallback.length
-    ? await fetchStooqQuotesForHoldings(missingForFallback).catch(() => ({}))
-    : {};
-
-  const quotes = { ...stooqQuotes, ...yahooQuotes };
+  // Per-market routing with fallbacks (see src/marketdata.js):
+  //   US -> Finnhub -> Stooq
+  //   HK -> Sina    -> Stooq
+  //   SET-> set.or.th -> Stooq
+  const quotes = await fetchUnifiedQuotesForHoldings(env, active.holdings).catch(() => ({}));
   const sources = {};
-  for (const sym of Object.keys(yahooQuotes)) sources[sym] = 'yahoo';
-  for (const sym of Object.keys(stooqQuotes)) {
-    if (!sources[sym]) sources[sym] = 'stooq';
-  }
+  for (const sym of Object.keys(quotes)) sources[sym] = quotes[sym]?.source || null;
 
   // Build the per-symbol context that goes to Claude.
   const items = active.holdings.map((h) => {
@@ -549,12 +542,18 @@ async function showHoldingsStatus(ev, env, userId) {
   });
 
   const realQuoteCount = items.filter((i) => i.has_quote).length;
-  const yahooCount = items.filter((i) => i.source === 'yahoo').length;
-  const stooqCount = items.filter((i) => i.source === 'stooq').length;
+  const sourceCounts = items.reduce(
+    (acc, i) => {
+      const k = i.source || 'none';
+      acc[k] = (acc[k] || 0) + 1;
+      return acc;
+    },
+    {},
+  );
   await logEvent(env, userId, 'holdings_status_requested', {
     portfolio_id: active.portfolio.id,
     real_quote_count: realQuoteCount,
-    quote_sources: { yahoo: yahooCount, stooq: stooqCount, none: items.length - realQuoteCount },
+    quote_sources: sourceCounts,
     items: merged.map((m) => ({
       symbol: m.symbol,
       action: m.action,

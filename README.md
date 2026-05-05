@@ -53,6 +53,8 @@ wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
 wrangler secret put ANTHROPIC_API_KEY
 wrangler secret put CRON_KEY                # any random string; same value
                                             # also goes in GitHub repo secret CRON_KEY
+wrangler secret put FINNHUB_KEY             # sign up at https://finnhub.io
+                                            # free tier: 60 req/min, US real-time
 
 # 4. Apply schema to remote D1
 npm run db:init:remote
@@ -143,7 +145,7 @@ Endpoints marked *(CRON_KEY)* require an `Authorization: Bearer ${CRON_KEY}` hea
 | `พอร์ต` / `portfolio` | Show the **active** portfolio summary card |
 | `พอร์ตทั้งหมด` / `portfolios` / `list` | List all saved portfolios (Flex card) — tap **เลือก** to switch active, **ลบ** to delete one |
 | `เปลี่ยนชื่อ <ชื่อใหม่>` / `rename <name>` | Rename the active portfolio |
-| `สถานะหุ้น` / `status` | Live price + day change + P&L per held symbol, with a per-symbol AI action label (Hold / Watch / Trim / Add / Alert). Quotes come from Yahoo Finance with a Stooq.com CSV fallback for symbols Yahoo blocks/misses. |
+| `สถานะหุ้น` / `status` | Live price + day change + P&L per held symbol, with a per-symbol AI action label (Hold / Watch / Trim / Add / Alert). Quotes route per market: **US → Finnhub**, **HK → Sina Finance (real-time)**, **SET → set.or.th (~15-min delayed)**, with **Stooq EOD** as a fallback for any symbol the primaries miss. |
 | `วิเคราะห์พอร์ต` | AI commentary on the active portfolio |
 | `ปรับพอร์ต` | AI rebalance suggestions on the active portfolio |
 | `เปรียบเทียบพอร์ต` / `compare` | Diff between active portfolio and the most recent non-active one |
@@ -165,6 +167,23 @@ Endpoints marked *(CRON_KEY)* require an `Authorization: Bearer ${CRON_KEY}` hea
 3. The bot replies with a Flex card showing each holding and two buttons: **บันทึกพอร์ต** (confirm) or **อ่านใหม่** (cancel).
 4. On confirm, the pending blob is promoted into the D1 `portfolios` + `holdings` tables; the KV entry is deleted.
 5. From then on, free-form chat passes held symbols as context, and the daily alert generates personalised picks per user.
+
+## Quote sources for `สถานะหุ้น`
+
+`src/marketdata.js` orchestrates per-market routing for `สถานะหุ้น`. Each
+adapter returns the same standardized shape so the rest of the worker
+doesn't care which feed served a given symbol.
+
+| Market | Primary | Fallback | Notes |
+|---|---|---|---|
+| **US** | [Finnhub](https://finnhub.io) (`src/finnhub.js`) | Stooq | Free key, 60 req/min, real-time. Skipped if `FINNHUB_KEY` is unset. |
+| **HK** | [Sina Finance](https://hq.sinajs.cn) (`src/sina.js`) | Stooq | No key. Real-time. Response is GB2312-encoded JS; we decode and parse. **Requires `Referer: https://finance.sina.com.cn`** or 403. |
+| **SET (Thai)** | [set.or.th internal JSON](https://www.set.or.th) (`src/setor.js`) | Stooq | No key. ~15-min delayed. Cached in KV for 60s to be a polite citizen. Endpoint is unofficial and may change shape. |
+| **EOD any market** | [Stooq](https://stooq.com) (`src/stooq.js`) | — | No key. EOD only — `day_change_pct` computed intra-day from open/close. |
+
+Yahoo Finance was retired from the hot path because it aggressively blocks
+Cloudflare-Worker IPs. `src/quotes.js` (the Yahoo adapter) and `src/news.js`
+remain in the repo — `news.js` is still used by the daily-news job.
 
 ## Trading-journey event log
 

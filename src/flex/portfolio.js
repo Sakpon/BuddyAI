@@ -748,6 +748,229 @@ export function portfolioListCard(portfolios) {
   };
 }
 
+const TX_TONE = {
+  BUY:  { color: '#16A34A', label: 'ซื้อ' },
+  SELL: { color: '#DC2626', label: 'ขาย' },
+};
+
+export function transactionConfirmCard({ result, portfolioName }) {
+  const tone = TX_TONE[result.side] || TX_TONE.BUY;
+  const isBuy = result.side === 'BUY';
+
+  const total = Number(result.total) || 0;
+  const qty = Number(result.quantity) || 0;
+  const px  = Number(result.price) || 0;
+  const fees = Number(result.fees) || 0;
+
+  const body = [
+    {
+      type: 'box',
+      layout: 'horizontal',
+      contents: [
+        { type: 'text', text: result.symbol || '?', size: 'xl', weight: 'bold', color: '#0F172A', flex: 3 },
+        {
+          type: 'box',
+          layout: 'vertical',
+          flex: 2,
+          backgroundColor: tone.color,
+          cornerRadius: '6px',
+          paddingAll: '6px',
+          contents: [
+            { type: 'text', text: tone.label, size: 'sm', weight: 'bold', color: '#FFFFFF', align: 'center' },
+          ],
+        },
+      ],
+    },
+    { type: 'separator', margin: 'md' },
+    kv('จำนวน', fmtQty(qty) + ' หุ้น'),
+    kv('ราคา', fmtMoney(px)),
+    ...(fees > 0 ? [kv('ค่าธรรมเนียม', fmtMoney(fees))] : []),
+    kv(isBuy ? 'รวมเงินที่จ่าย' : 'รวมเงินที่ได้รับ', fmtMoney(total)),
+  ];
+
+  if (!isBuy && result.realized_pl != null) {
+    const pl = Number(result.realized_pl);
+    const plColor = pl >= 0 ? '#16A34A' : '#DC2626';
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({
+      type: 'box',
+      layout: 'horizontal',
+      contents: [
+        { type: 'text', text: 'กำไร / ขาดทุนที่รับรู้', size: 'sm', color: '#475569', flex: 3 },
+        {
+          type: 'text',
+          text: `${pl >= 0 ? '+' : ''}${fmtMoney(pl)}`,
+          size: 'sm',
+          weight: 'bold',
+          color: plColor,
+          align: 'end',
+          flex: 2,
+        },
+      ],
+    });
+    if (result.avg_cost != null) {
+      body.push({
+        type: 'text',
+        text: `เทียบกับต้นทุนเฉลี่ย ${fmtMoney(result.avg_cost)}`,
+        size: 'xxs',
+        color: '#94A3B8',
+      });
+    }
+  }
+
+  body.push({ type: 'separator', margin: 'md' });
+  const pos = result.position || {};
+  if (pos.quantity > 0) {
+    body.push({ type: 'text', text: 'สถานะหลังทำรายการ', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    body.push(kv('คงเหลือ', `${fmtQty(pos.quantity)} หุ้น`));
+    if (pos.avg_cost) body.push(kv('ต้นทุนเฉลี่ย', fmtMoney(pos.avg_cost)));
+  } else {
+    body.push({
+      type: 'text',
+      text: 'ปิดสถานะทั้งหมดแล้ว',
+      size: 'sm',
+      color: '#475569',
+      align: 'center',
+      margin: 'md',
+    });
+  }
+
+  return {
+    type: 'flex',
+    altText: `${tone.label} ${result.symbol} ${fmtQty(qty)} @ ${fmtMoney(px)}`,
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: hero(
+        `บันทึกรายการ${tone.label}เรียบร้อย`,
+        portfolioName ? `พอร์ต: ${portfolioName}` : '',
+      ),
+      body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: 'ดูรายการซื้อขายทั้งหมด',
+              data: 'action=list-transactions',
+              displayText: 'รายการซื้อขาย',
+            },
+          },
+          {
+            type: 'text',
+            text: 'ราคาและจำนวนตามที่ผู้ใช้ระบุ ระบบไม่ได้ส่งคำสั่งซื้อขายจริง',
+            size: 'xxs',
+            color: '#94A3B8',
+            wrap: true,
+            align: 'center',
+          },
+        ],
+      },
+    },
+  };
+}
+
+export function transactionsListCard({ portfolioName, transactions }) {
+  const rows = (transactions || []).slice(0, 12).map((t) => transactionRow(t));
+  return {
+    type: 'flex',
+    altText: 'รายการซื้อขาย',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: hero('รายการซื้อขาย', portfolioName || ''),
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: rows.length
+          ? rows
+          : [{ type: 'text', text: '— ยังไม่มีรายการ —', size: 'sm', color: '#94A3B8', align: 'center' }],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'text',
+            text: 'พิมพ์ "ซื้อ <SYMBOL> <จำนวน> @ <ราคา>" หรือ "ขาย ..." เพื่อบันทึกรายการ',
+            size: 'xxs',
+            color: '#94A3B8',
+            wrap: true,
+            align: 'center',
+          },
+        ],
+      },
+    },
+  };
+}
+
+function transactionRow(t) {
+  const tone = TX_TONE[t.side] || TX_TONE.BUY;
+  const qty = Number(t.quantity) || 0;
+  const px  = Number(t.price) || 0;
+  const total = qty * px;
+  const dt = t.executed_at
+    ? new Intl.DateTimeFormat('th-TH', {
+        timeZone: 'Asia/Bangkok',
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(new Date(Number(t.executed_at) * 1000))
+    : '';
+
+  const plLine = t.realized_pl != null
+    ? [{
+        type: 'text',
+        text: `P/L ${Number(t.realized_pl) >= 0 ? '+' : ''}${fmtMoney(t.realized_pl)}`,
+        size: 'xxs',
+        color: Number(t.realized_pl) >= 0 ? '#16A34A' : '#DC2626',
+      }]
+    : [];
+
+  return {
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'xs',
+    paddingAll: '8px',
+    cornerRadius: '6px',
+    backgroundColor: '#F8FAFC',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: tone.label, size: 'xs', weight: 'bold', color: tone.color, flex: 1 },
+          { type: 'text', text: t.symbol || '?', size: 'sm', weight: 'bold', color: '#0F172A', flex: 3 },
+          { type: 'text', text: dt, size: 'xxs', color: '#94A3B8', align: 'end', flex: 3 },
+        ],
+      },
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: `${fmtQty(qty)} × ${fmtMoney(px)}`, size: 'xs', color: '#475569', flex: 3 },
+          { type: 'text', text: fmtMoney(total), size: 'xs', color: '#0F172A', align: 'end', flex: 2 },
+        ],
+      },
+      ...plLine,
+    ],
+  };
+}
+
+function fmtQty(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return String(n);
+  return v.toLocaleString('en-US', { maximumFractionDigits: 4 });
+}
+
 function portfolioListRow(p) {
   const isActive = p.is_active === 1 || p.is_active === true;
   const meta = [];

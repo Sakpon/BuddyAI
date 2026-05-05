@@ -187,6 +187,9 @@ test message) are tracked as a follow-up.
 | `พอร์ตทั้งหมด` / `portfolios` / `list` | List all saved portfolios (Flex card) — tap **เลือก** to switch active, **ลบ** to delete one |
 | `เปลี่ยนชื่อ <ชื่อใหม่>` / `rename <name>` | Rename the active portfolio |
 | `สถานะหุ้น` / `status` | Live price + day change + P&L per held symbol, with a per-symbol AI action label (Hold / Watch / Trim / Add / Alert). Quotes route per market: **US → Finnhub**, **HK → Sina Finance (real-time)**, **SET → set.or.th (~15-min delayed)**, with **Stooq EOD** as a fallback for any symbol the primaries miss. |
+| `ซื้อ <SYMBOL> <จำนวน> @ <ราคา>` / `buy …` | Append a BUY transaction to the active portfolio. Updates the holding's quantity + weighted-average cost and replies with a Flex confirm card. Example: `ซื้อ PTT 100 @ 35.50`. |
+| `ขาย <SYMBOL> <จำนวน> @ <ราคา>` / `sell …` | Append a SELL transaction. Computes realized P/L against the existing avg cost, decrements (or removes) the holding, and replies with a Flex confirm card. |
+| `รายการซื้อขาย` / `transactions` | Show the active portfolio's transaction history as a Flex card |
 | `วิเคราะห์พอร์ต` | AI commentary on the active portfolio |
 | `ปรับพอร์ต` | AI rebalance suggestions on the active portfolio |
 | `เปรียบเทียบพอร์ต` / `compare` | Diff between active portfolio and the most recent non-active one |
@@ -265,6 +268,9 @@ Event types currently emitted from `src/index.js`:
 | `holdings_status_requested` | `สถานะหุ้น` returned a per-holding status card | `portfolio_id`, `real_quote_count`, `quote_sources: { yahoo, stooq, none }`, `items[{symbol, action, day_change_pct, pl_pct, source}]` |
 | `holdings_status_failed` | Status command errored | `error` |
 | `portfolio_updated` | User tapped **อัพเดต `<active>`** on the confirm card | `portfolio_id`, `snapshot_id`, `name`, `total_value`, `symbols` |
+| `transaction_buy` | User logged a BUY (`ซื้อ …`) | `portfolio_id`, `tx_id`, `symbol`, `quantity`, `price`, `fees`, `new_quantity`, `new_avg_cost` |
+| `transaction_sell` | User logged a SELL (`ขาย …`) | `portfolio_id`, `tx_id`, `symbol`, `quantity`, `price`, `fees`, `realized_pl`, `new_quantity`, `new_avg_cost` |
+| `transaction_failed` | Buy/sell rejected (no position, insufficient qty, bad input) | `portfolio_id`, `side`, `symbol`, `quantity`, `price`, `error` |
 
 Read a user's timeline:
 ```bash

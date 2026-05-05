@@ -440,6 +440,160 @@ export async function getJourney(env, userId, limit = 100) {
   }));
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Buy / sell transactions on a portfolio.
+//
+// `transactions` is the append-only ledger; `holdings` continues to reflect
+// the current position so analyse/rebalance/news queries don't need to
+// re-derive it. Recording a trade does both in sequence.
+// ────────────────────────────────────────────────────────────────────────
+
+export async function recordBuy(env, userId, portfolioId, { symbol, quantity, price, fees = 0, notes = null }) {
+  const sym = String(symbol || '').toUpperCase().trim();
+  const qty = Number(quantity);
+  const px  = Number(price);
+  if (!sym || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(px) || px <= 0) {
+    return { ok: false, error: 'invalid_input' };
+  }
+
+  const owns = await env.DB.prepare(
+    `SELECT id FROM portfolios WHERE id = ? AND user_id = ? LIMIT 1`,
+  )
+    .bind(portfolioId, userId)
+    .first();
+  if (!owns) return { ok: false, error: 'portfolio_not_found' };
+
+  const txInsert = await env.DB.prepare(
+    `INSERT INTO transactions (user_id, portfolio_id, symbol, side, quantity, price, fees, notes)
+     VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?)`,
+  )
+    .bind(userId, portfolioId, sym, qty, px, numOrNull(fees) || 0, notes || null)
+    .run();
+  const txId = txInsert?.meta?.last_row_id || null;
+
+  const existing = await env.DB.prepare(
+    `SELECT id, quantity, avg_cost FROM holdings WHERE portfolio_id = ? AND symbol = ? LIMIT 1`,
+  )
+    .bind(portfolioId, sym)
+    .first();
+
+  let newQty, newAvg;
+  if (existing) {
+    const oldQty = Number(existing.quantity) || 0;
+    const oldAvg = Number(existing.avg_cost) || 0;
+    newQty = oldQty + qty;
+    newAvg = newQty > 0 ? ((oldQty * oldAvg) + (qty * px)) / newQty : px;
+    await env.DB.prepare(
+      `UPDATE holdings SET quantity = ?, avg_cost = ? WHERE id = ?`,
+    )
+      .bind(newQty, newAvg, existing.id)
+      .run();
+  } else {
+    newQty = qty;
+    newAvg = px;
+    await env.DB.prepare(
+      `INSERT INTO holdings (portfolio_id, symbol, quantity, avg_cost, market_price)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+      .bind(portfolioId, sym, qty, px, px)
+      .run();
+  }
+
+  return {
+    ok: true,
+    txId,
+    symbol: sym,
+    side: 'BUY',
+    quantity: qty,
+    price: px,
+    fees: Number(fees) || 0,
+    total: qty * px + (Number(fees) || 0),
+    position: { quantity: newQty, avg_cost: newAvg },
+  };
+}
+
+export async function recordSell(env, userId, portfolioId, { symbol, quantity, price, fees = 0, notes = null }) {
+  const sym = String(symbol || '').toUpperCase().trim();
+  const qty = Number(quantity);
+  const px  = Number(price);
+  if (!sym || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(px) || px <= 0) {
+    return { ok: false, error: 'invalid_input' };
+  }
+
+  const owns = await env.DB.prepare(
+    `SELECT id FROM portfolios WHERE id = ? AND user_id = ? LIMIT 1`,
+  )
+    .bind(portfolioId, userId)
+    .first();
+  if (!owns) return { ok: false, error: 'portfolio_not_found' };
+
+  const existing = await env.DB.prepare(
+    `SELECT id, quantity, avg_cost FROM holdings WHERE portfolio_id = ? AND symbol = ? LIMIT 1`,
+  )
+    .bind(portfolioId, sym)
+    .first();
+  if (!existing) return { ok: false, error: 'no_position' };
+
+  const oldQty = Number(existing.quantity) || 0;
+  if (qty > oldQty + 1e-9) return { ok: false, error: 'insufficient_quantity', held: oldQty };
+
+  const oldAvg = Number(existing.avg_cost) || 0;
+  const fee = numOrNull(fees) || 0;
+  const realizedPl = (px - oldAvg) * qty - fee;
+
+  const txInsert = await env.DB.prepare(
+    `INSERT INTO transactions (user_id, portfolio_id, symbol, side, quantity, price, fees, realized_pl, notes)
+     VALUES (?, ?, ?, 'SELL', ?, ?, ?, ?, ?)`,
+  )
+    .bind(userId, portfolioId, sym, qty, px, fee, realizedPl, notes || null)
+    .run();
+  const txId = txInsert?.meta?.last_row_id || null;
+
+  const newQty = oldQty - qty;
+  if (newQty <= 1e-9) {
+    await env.DB.prepare(`DELETE FROM holdings WHERE id = ?`).bind(existing.id).run();
+  } else {
+    // Selling does not change average cost.
+    await env.DB.prepare(`UPDATE holdings SET quantity = ? WHERE id = ?`)
+      .bind(newQty, existing.id)
+      .run();
+  }
+
+  return {
+    ok: true,
+    txId,
+    symbol: sym,
+    side: 'SELL',
+    quantity: qty,
+    price: px,
+    fees: fee,
+    total: qty * px - fee,
+    realized_pl: realizedPl,
+    avg_cost: oldAvg,
+    position: { quantity: newQty > 1e-9 ? newQty : 0, avg_cost: newQty > 1e-9 ? oldAvg : 0 },
+  };
+}
+
+export async function listTransactions(env, userId, portfolioId, limit = 50) {
+  const owns = await env.DB.prepare(
+    `SELECT 1 FROM portfolios WHERE id = ? AND user_id = ? LIMIT 1`,
+  )
+    .bind(portfolioId, userId)
+    .first();
+  if (!owns) return [];
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, symbol, side, quantity, price, fees, realized_pl, notes, executed_at
+       FROM transactions
+      WHERE portfolio_id = ?
+      ORDER BY executed_at DESC, id DESC
+      LIMIT ?`,
+  )
+    .bind(portfolioId, limit)
+    .all();
+  return results || [];
+}
+
 function safeParse(s) {
   try { return JSON.parse(s); } catch { return s; }
 }

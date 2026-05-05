@@ -134,8 +134,38 @@ auto-opted into news at migration time so behaviour didn't regress.
 | `/test-subs` | GET | List current subscribers *(CRON_KEY)* |
 | `/test-log` | GET | Last cron run logs — both `alert` and `news` *(CRON_KEY)* |
 | `/journey?userId=<id>&limit=100` | GET | Full event timeline for a given LINE userId *(CRON_KEY)* |
+| `/admin` | GET | Admin portal HTML (page itself is unauth — JS prompts for the key) |
+| `/admin/api/overview` | GET | Row counts per table *(CRON_KEY)* |
+| `/admin/api/users` | GET | All users with subscription flags + portfolio/event counts *(CRON_KEY)* |
+| `/admin/api/portfolios` | GET | All saved portfolios across users with symbols *(CRON_KEY)* |
+| `/admin/api/journey?userId=<id>` | GET | Same as `/journey`, mounted under admin *(CRON_KEY)* |
+| `/admin/api/cron-logs` | GET | Same as `/test-log` *(CRON_KEY)* |
 
 Endpoints marked *(CRON_KEY)* require an `Authorization: Bearer ${CRON_KEY}` header.
+
+## Admin portal
+
+A single-page admin UI lives at `/admin` (e.g.
+`https://buddyai.<your-subdomain>.workers.dev/admin`). Open it in a browser:
+
+1. The page prompts for the `CRON_KEY` (your existing Cloudflare secret) and
+   stores it in `sessionStorage` for the tab's lifetime.
+2. Five tabs:
+   - **Overview** — row counts per table.
+   - **Users** — every user with display name, alert/news subscription badges,
+     portfolio/message/event counts, and a "journey →" link.
+   - **Portfolios** — every saved portfolio across users with symbols, total
+     value, source, taken_at, and the owning userId.
+   - **Journey** — paste any userId (or click from the Users tab) → full event
+     timeline with payload JSON. Same data as `/journey`.
+   - **Cron logs** — last-run blobs for the daily-alert and daily-news jobs.
+
+Implementation: vanilla JS + Tailwind via CDN, no build step. The HTML lives
+in `src/admin/page.js`; the read-only API in `src/admin/handlers.js`. Auth
+reuses `CRON_KEY`, so there's no new secret to configure.
+
+Read-only for now — write actions (manual trigger, subscription toggle, push
+test message) are tracked as a follow-up.
 
 ## LINE commands
 

@@ -60,6 +60,14 @@ import { deleteSession, setSession } from './session.js';
 import { extractPortfolio, fetchLineImage } from './vision.js';
 import { fetchYahooNewsForHoldings } from './news.js';
 import { fetchUnifiedQuotesForHoldings } from './marketdata.js';
+import { adminPage } from './admin/page.js';
+import {
+  adminApiCronLogs,
+  adminApiJourney,
+  adminApiOverview,
+  adminApiPortfolios,
+  adminApiUsers,
+} from './admin/handlers.js';
 
 const HELP_TH = [
   'คำสั่งที่ใช้ได้:',
@@ -133,6 +141,22 @@ export default {
       const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit')) || 100));
       const events = await getJourney(env, targetUserId, limit);
       return json({ ok: true, userId: targetUserId, count: events.length, events });
+    }
+
+    // Admin portal — page is unauth (just static HTML), API is gated.
+    if (url.pathname === '/admin' || url.pathname === '/admin/') {
+      return new Response(adminPage(), {
+        headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+      });
+    }
+    if (url.pathname.startsWith('/admin/api/')) {
+      if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
+      if (url.pathname === '/admin/api/overview')   return adminApiOverview(env);
+      if (url.pathname === '/admin/api/users')      return adminApiUsers(env);
+      if (url.pathname === '/admin/api/portfolios') return adminApiPortfolios(env);
+      if (url.pathname === '/admin/api/journey')    return adminApiJourney(env, url);
+      if (url.pathname === '/admin/api/cron-logs')  return adminApiCronLogs(env);
+      return json({ ok: false, error: 'admin route not found' }, 404);
     }
 
     return new Response('Not found', { status: 404 });

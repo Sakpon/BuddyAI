@@ -53,6 +53,8 @@ wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
 wrangler secret put ANTHROPIC_API_KEY
 wrangler secret put CRON_KEY                # any random string; same value
                                             # also goes in GitHub repo secret CRON_KEY
+wrangler secret put ADMIN_USER              # username for /admin Basic auth
+wrangler secret put ADMIN_PASS              # password for /admin Basic auth (12+ chars)
 wrangler secret put FINNHUB_KEY             # sign up at https://finnhub.io
                                             # free tier: 60 req/min, US real-time
 
@@ -148,8 +150,10 @@ Endpoints marked *(CRON_KEY)* require an `Authorization: Bearer ${CRON_KEY}` hea
 A single-page admin UI lives at `/admin` (e.g.
 `https://buddyai.<your-subdomain>.workers.dev/admin`). Open it in a browser:
 
-1. The page prompts for the `CRON_KEY` (your existing Cloudflare secret) and
-   stores it in `sessionStorage` for the tab's lifetime.
+1. The browser shows a native HTTP-Basic prompt for username + password.
+   Set those values via `wrangler secret put ADMIN_USER` and
+   `wrangler secret put ADMIN_PASS`. The page won't load until both are
+   set on the worker.
 2. Five tabs:
    - **Overview** — row counts per table.
    - **Users** — every user with display name, alert/news subscription badges,
@@ -162,7 +166,14 @@ A single-page admin UI lives at `/admin` (e.g.
 
 Implementation: vanilla JS + Tailwind via CDN, no build step. The HTML lives
 in `src/admin/page.js`; the read-only API in `src/admin/handlers.js`. Auth
-reuses `CRON_KEY`, so there's no new secret to configure.
+accepts **either**:
+
+- `Authorization: Bearer ${CRON_KEY}` — cron workflows + curl scripts
+- `Authorization: Basic base64(${ADMIN_USER}:${ADMIN_PASS})` — browser
+
+so the daily-alert / daily-news GitHub workflows keep working unchanged
+while the admin portal gets a proper user/pass prompt. Constant-time
+compare on each path; missing-secret cases fail closed.
 
 Read-only for now — write actions (manual trigger, subscription toggle, push
 test message) are tracked as a follow-up.

@@ -104,25 +104,25 @@ export default {
     }
 
     if (url.pathname === '/test-alert') {
-      if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
+      if (!authorised(request, env)) return unauthorised(false);
       ctx.waitUntil(sendDailyStockAlert(env));
       return json({ ok: true, triggered: 'daily-alert' });
     }
 
     if (url.pathname === '/test-news') {
-      if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
+      if (!authorised(request, env)) return unauthorised(false);
       ctx.waitUntil(sendDailyNews(env));
       return json({ ok: true, triggered: 'daily-news' });
     }
 
     if (url.pathname === '/test-subs') {
-      if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
+      if (!authorised(request, env)) return unauthorised(false);
       const subs = await getSubscribedUsers(env);
       return json({ ok: true, count: subs.length, subs });
     }
 
     if (url.pathname === '/test-log') {
-      if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
+      if (!authorised(request, env)) return unauthorised(false);
       const [alertLog, newsLog] = await Promise.all([
         env.SESSION_KV.get('cron:last-run'),
         env.SESSION_KV.get('news:last-run'),
@@ -135,7 +135,7 @@ export default {
     }
 
     if (url.pathname === '/journey') {
-      if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
+      if (!authorised(request, env)) return unauthorised(false);
       const targetUserId = url.searchParams.get('userId');
       if (!targetUserId) return json({ ok: false, error: 'userId required' }, 400);
       const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit')) || 100));
@@ -143,14 +143,17 @@ export default {
       return json({ ok: true, userId: targetUserId, count: events.length, events });
     }
 
-    // Admin portal — page is unauth (just static HTML), API is gated.
+    // Admin portal — entire /admin tree is gated. Browser-friendly 401 with
+    // WWW-Authenticate so Safari/Chrome show their native user/pass prompt
+    // and cache the credentials for subsequent /admin/api/* calls.
     if (url.pathname === '/admin' || url.pathname === '/admin/') {
+      if (!authorised(request, env)) return unauthorised(true);
       return new Response(adminPage(), {
         headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
       });
     }
     if (url.pathname.startsWith('/admin/api/')) {
-      if (!authorisedCron(request, env)) return new Response('forbidden', { status: 403 });
+      if (!authorised(request, env)) return unauthorised(true);
       if (url.pathname === '/admin/api/overview')   return adminApiOverview(env);
       if (url.pathname === '/admin/api/users')      return adminApiUsers(env);
       if (url.pathname === '/admin/api/portfolios') return adminApiPortfolios(env);
@@ -955,12 +958,41 @@ function json(obj, status = 200) {
   });
 }
 
-function authorisedCron(request, env) {
-  if (!env.CRON_KEY) return false;
+// Accepts EITHER:
+//   - Bearer <CRON_KEY>                       (cron workflows, curl scripts)
+//   - Basic base64(<ADMIN_USER>:<ADMIN_PASS>) (browser admin portal)
+// Constant-time compare on each path; missing-secret cases fail closed.
+function authorised(request, env) {
   const header = request.headers.get('authorization') || '';
-  const expected = `Bearer ${env.CRON_KEY}`;
-  if (header.length !== expected.length) return false;
+
+  if (env.CRON_KEY && header.startsWith('Bearer ')) {
+    const expected = `Bearer ${env.CRON_KEY}`;
+    if (timingSafeStringEqual(header, expected)) return true;
+  }
+
+  if (env.ADMIN_USER && env.ADMIN_PASS && header.startsWith('Basic ')) {
+    let decoded = '';
+    try { decoded = atob(header.slice(6).trim()); } catch { return false; }
+    const expected = `${env.ADMIN_USER}:${env.ADMIN_PASS}`;
+    if (timingSafeStringEqual(decoded, expected)) return true;
+  }
+
+  return false;
+}
+
+function timingSafeStringEqual(a, b) {
+  if (a.length !== b.length) return false;
   let diff = 0;
-  for (let i = 0; i < header.length; i++) diff |= header.charCodeAt(i) ^ expected.charCodeAt(i);
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
+}
+
+const ADMIN_REALM = 'WWW-Authenticate';
+const ADMIN_REALM_VALUE = 'Basic realm="buddyAI admin", charset="UTF-8"';
+
+function unauthorised(forBrowser) {
+  return new Response(forBrowser ? 'Authentication required' : 'forbidden', {
+    status: forBrowser ? 401 : 403,
+    headers: forBrowser ? { [ADMIN_REALM]: ADMIN_REALM_VALUE } : {},
+  });
 }

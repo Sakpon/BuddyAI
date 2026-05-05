@@ -25,7 +25,6 @@ export function adminPage() {
     </div>
     <div class="flex gap-2">
       <button id="refresh-btn" class="px-3 py-1.5 text-xs font-medium rounded bg-slate-900 text-white hover:bg-slate-700">Refresh</button>
-      <button id="logout-btn" class="px-3 py-1.5 text-xs font-medium rounded bg-white border border-slate-300 hover:bg-slate-50">Logout</button>
     </div>
   </header>
 
@@ -47,25 +46,17 @@ export function adminPage() {
 </div>
 
 <script>
-const KEY_STORAGE = 'finbot-admin-key';
-function getKey() {
-  let k = sessionStorage.getItem(KEY_STORAGE);
-  if (!k) {
-    k = prompt('Enter CRON_KEY (your Cloudflare secret):');
-    if (!k) return null;
-    sessionStorage.setItem(KEY_STORAGE, k.trim());
-  }
-  return sessionStorage.getItem(KEY_STORAGE);
-}
+// Auth is HTTP Basic, handled by the browser. The /admin GET that loaded
+// this page already passed credentials, and the browser sends them on every
+// /admin/api/* fetch automatically — no JS-side key handling needed.
 async function api(path) {
-  const k = getKey();
-  if (!k) throw new Error('No key');
-  const res = await fetch(path, { headers: { authorization: 'Bearer ' + k } });
-  if (res.status === 403) {
-    sessionStorage.removeItem(KEY_STORAGE);
-    throw new Error('Forbidden — wrong CRON_KEY. Reload to retry.');
+  const res = await fetch(path, { credentials: 'same-origin' });
+  if (res.status === 401) {
+    throw new Error('Authentication required — reload and re-enter credentials.');
   }
-  if (!res.ok) throw new Error('HTTP ' + res.status + ': ' + (await res.text().catch(() => '')));
+  if (!res.ok) {
+    throw new Error('HTTP ' + res.status + ': ' + (await res.text().catch(() => '')));
+  }
   return res.json();
 }
 function escapeHtml(s) {
@@ -113,11 +104,6 @@ document.getElementById('refresh-btn').addEventListener('click', () => {
   const active = [...tabs].find((t) => t.classList.contains('border-sky-500'));
   activate(active ? active.dataset.tab : 'overview');
 });
-document.getElementById('logout-btn').addEventListener('click', () => {
-  sessionStorage.removeItem(KEY_STORAGE);
-  location.reload();
-});
-
 document.getElementById('env-line').textContent = location.host;
 
 // ─── overview ────────────────────────────────────────────────────────

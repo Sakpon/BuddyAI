@@ -3,4 +3,5 @@ LINE_CHANNEL_ACCESS_TOKEN=your_line_channel_access_token
 ANTHROPIC_API_KEY=sk-ant-...
 CRON_KEY=any_random_string
 FINNHUB_KEY=your_finnhub_api_key
-
+ADMIN_USER=admin_username
+ADMIN_PASS=strong_random_password

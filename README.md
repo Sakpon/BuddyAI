@@ -53,6 +53,8 @@ wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
 wrangler secret put ANTHROPIC_API_KEY
 wrangler secret put CRON_KEY                # any random string; same value
                                             # also goes in GitHub repo secret CRON_KEY
+wrangler secret put FINNHUB_KEY             # sign up at https://finnhub.io
+                                            # free tier: 60 req/min, US real-time
 
 # 4. Apply schema to remote D1
 npm run db:init:remote
@@ -132,8 +134,38 @@ auto-opted into news at migration time so behaviour didn't regress.
 | `/test-subs` | GET | List current subscribers *(CRON_KEY)* |
 | `/test-log` | GET | Last cron run logs — both `alert` and `news` *(CRON_KEY)* |
 | `/journey?userId=<id>&limit=100` | GET | Full event timeline for a given LINE userId *(CRON_KEY)* |
+| `/admin` | GET | Admin portal HTML (page itself is unauth — JS prompts for the key) |
+| `/admin/api/overview` | GET | Row counts per table *(CRON_KEY)* |
+| `/admin/api/users` | GET | All users with subscription flags + portfolio/event counts *(CRON_KEY)* |
+| `/admin/api/portfolios` | GET | All saved portfolios across users with symbols *(CRON_KEY)* |
+| `/admin/api/journey?userId=<id>` | GET | Same as `/journey`, mounted under admin *(CRON_KEY)* |
+| `/admin/api/cron-logs` | GET | Same as `/test-log` *(CRON_KEY)* |
 
 Endpoints marked *(CRON_KEY)* require an `Authorization: Bearer ${CRON_KEY}` header.
+
+## Admin portal
+
+A single-page admin UI lives at `/admin` (e.g.
+`https://buddyai.<your-subdomain>.workers.dev/admin`). Open it in a browser:
+
+1. The page prompts for the `CRON_KEY` (your existing Cloudflare secret) and
+   stores it in `sessionStorage` for the tab's lifetime.
+2. Five tabs:
+   - **Overview** — row counts per table.
+   - **Users** — every user with display name, alert/news subscription badges,
+     portfolio/message/event counts, and a "journey →" link.
+   - **Portfolios** — every saved portfolio across users with symbols, total
+     value, source, taken_at, and the owning userId.
+   - **Journey** — paste any userId (or click from the Users tab) → full event
+     timeline with payload JSON. Same data as `/journey`.
+   - **Cron logs** — last-run blobs for the daily-alert and daily-news jobs.
+
+Implementation: vanilla JS + Tailwind via CDN, no build step. The HTML lives
+in `src/admin/page.js`; the read-only API in `src/admin/handlers.js`. Auth
+reuses `CRON_KEY`, so there's no new secret to configure.
+
+Read-only for now — write actions (manual trigger, subscription toggle, push
+test message) are tracked as a follow-up.
 
 ## LINE commands
 
@@ -143,7 +175,7 @@ Endpoints marked *(CRON_KEY)* require an `Authorization: Bearer ${CRON_KEY}` hea
 | `พอร์ต` / `portfolio` | Show the **active** portfolio summary card |
 | `พอร์ตทั้งหมด` / `portfolios` / `list` | List all saved portfolios (Flex card) — tap **เลือก** to switch active, **ลบ** to delete one |
 | `เปลี่ยนชื่อ <ชื่อใหม่>` / `rename <name>` | Rename the active portfolio |
-| `สถานะหุ้น` / `status` | Live price + day change + P&L per held symbol, with a per-symbol AI action label (Hold / Watch / Trim / Add / Alert). Quotes come from Yahoo Finance with a Stooq.com CSV fallback for symbols Yahoo blocks/misses. |
+| `สถานะหุ้น` / `status` | Live price + day change + P&L per held symbol, with a per-symbol AI action label (Hold / Watch / Trim / Add / Alert). Quotes route per market: **US → Finnhub**, **HK → Sina Finance (real-time)**, **SET → set.or.th (~15-min delayed)**, with **Stooq EOD** as a fallback for any symbol the primaries miss. |
 | `วิเคราะห์พอร์ต` | AI commentary on the active portfolio |
 | `ปรับพอร์ต` | AI rebalance suggestions on the active portfolio |
 | `เปรียบเทียบพอร์ต` / `compare` | Diff between active portfolio and the most recent non-active one |
@@ -165,6 +197,23 @@ Endpoints marked *(CRON_KEY)* require an `Authorization: Bearer ${CRON_KEY}` hea
 3. The bot replies with a Flex card showing each holding and two buttons: **บันทึกพอร์ต** (confirm) or **อ่านใหม่** (cancel).
 4. On confirm, the pending blob is promoted into the D1 `portfolios` + `holdings` tables; the KV entry is deleted.
 5. From then on, free-form chat passes held symbols as context, and the daily alert generates personalised picks per user.
+
+## Quote sources for `สถานะหุ้น`
+
+`src/marketdata.js` orchestrates per-market routing for `สถานะหุ้น`. Each
+adapter returns the same standardized shape so the rest of the worker
+doesn't care which feed served a given symbol.
+
+| Market | Primary | Fallback | Notes |
+|---|---|---|---|
+| **US** | [Finnhub](https://finnhub.io) (`src/finnhub.js`) | Stooq | Free key, 60 req/min, real-time. Skipped if `FINNHUB_KEY` is unset. |
+| **HK** | [Sina Finance](https://hq.sinajs.cn) (`src/sina.js`) | Stooq | No key. Real-time. Response is GB2312-encoded JS; we decode and parse. **Requires `Referer: https://finance.sina.com.cn`** or 403. |
+| **SET (Thai)** | [set.or.th internal JSON](https://www.set.or.th) (`src/setor.js`) | Stooq | No key. ~15-min delayed. Cached in KV for 60s to be a polite citizen. Endpoint is unofficial and may change shape. |
+| **EOD any market** | [Stooq](https://stooq.com) (`src/stooq.js`) | — | No key. EOD only — `day_change_pct` computed intra-day from open/close. |
+
+Yahoo Finance was retired from the hot path because it aggressively blocks
+Cloudflare-Worker IPs. `src/quotes.js` (the Yahoo adapter) and `src/news.js`
+remain in the repo — `news.js` is still used by the daily-news job.
 
 ## Trading-journey event log
 

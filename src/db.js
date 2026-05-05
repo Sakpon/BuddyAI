@@ -449,3 +449,63 @@ function numOrNull(v) {
   const n = typeof v === 'number' ? v : Number(String(v).replace(/,/g, ''));
   return Number.isFinite(n) ? n : null;
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// Admin-portal queries.
+//
+// These joins are read-only and small — fine for personal-bot scale.
+// ────────────────────────────────────────────────────────────────────────
+
+export async function listAllUsersWithStats(env) {
+  const { results } = await env.DB.prepare(`
+    SELECT
+      u.user_id,
+      u.display_name,
+      u.alert_subscribed,
+      u.news_subscribed,
+      u.created_at,
+      u.updated_at,
+      (SELECT COUNT(*) FROM portfolios p WHERE p.user_id = u.user_id) AS portfolio_count,
+      (SELECT COUNT(*) FROM messages  m WHERE m.user_id = u.user_id) AS message_count,
+      (SELECT COUNT(*) FROM events    e WHERE e.user_id = u.user_id) AS event_count,
+      (SELECT MAX(created_at) FROM events e WHERE e.user_id = u.user_id) AS last_event_at
+    FROM users u
+    ORDER BY COALESCE(last_event_at, u.updated_at) DESC, u.created_at DESC
+    LIMIT 200
+  `).all();
+  return results || [];
+}
+
+export async function listAllPortfoliosWithSymbols(env) {
+  const { results } = await env.DB.prepare(`
+    SELECT
+      p.id,
+      p.user_id,
+      p.name,
+      p.source,
+      p.total_value,
+      p.is_active,
+      p.taken_at,
+      (SELECT COUNT(*) FROM holdings h WHERE h.portfolio_id = p.id) AS holding_count,
+      (SELECT GROUP_CONCAT(h.symbol, ',')
+         FROM holdings h
+         WHERE h.portfolio_id = p.id) AS symbols
+    FROM portfolios p
+    ORDER BY p.taken_at DESC, p.id DESC
+    LIMIT 200
+  `).all();
+  return (results || []).map((r) => ({
+    ...r,
+    symbols: r.symbols ? r.symbols.split(',').filter(Boolean) : [],
+  }));
+}
+
+export async function getDbCounts(env) {
+  const tables = ['users', 'portfolios', 'holdings', 'messages', 'events'];
+  const out = {};
+  for (const t of tables) {
+    const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${t}`).first();
+    out[t] = row?.n ?? 0;
+  }
+  return out;
+}

@@ -878,16 +878,112 @@ export function transactionConfirmCard({ result, portfolioName }) {
 
 export function transactionsImportConfirmCard({ extracted, portfolioName }) {
   const all = extracted.transactions || [];
-  const done = all.filter((t) => t.status !== 'processing' && t.quantity != null && t.price != null);
-  const skipped = all.length - done.length;
-  const rows = done.slice(0, 10).map((t) => importRow(t));
-  const tail = done.length > 10
-    ? [{ type: 'text', text: `+ อีก ${done.length - 10} รายการ`, size: 'xs', color: '#94A3B8', margin: 'sm' }]
-    : [];
+  // Three buckets — surfaced separately so the user sees exactly what gets
+  // imported and what gets skipped (and why).
+  const ready = all.filter(
+    (t) => t.status !== 'processing' && t.quantity != null && t.price != null,
+  );
+  const pending = all.filter((t) => t.status === 'processing');
+  const incomplete = all.filter(
+    (t) => t.status !== 'processing' && (t.quantity == null || t.price == null),
+  );
 
-  const warnings = [];
-  if (skipped > 0) warnings.push(`ข้าม ${skipped} รายการ (Processing หรือข้อมูลไม่ครบ)`);
-  if (Array.isArray(extracted.warnings)) warnings.push(...extracted.warnings);
+  const body = [
+    {
+      type: 'text',
+      text: portfolioName ? `จะบันทึกเข้าพอร์ต: ${portfolioName}` : 'ยังไม่มีพอร์ตที่ใช้งาน',
+      size: 'xs',
+      color: '#475569',
+      wrap: true,
+    },
+  ];
+
+  if (ready.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({
+      type: 'text',
+      text: `พร้อมบันทึก (${ready.length})`,
+      weight: 'bold',
+      size: 'sm',
+      color: '#16A34A',
+      margin: 'md',
+    });
+    for (const t of ready.slice(0, 10)) body.push(importRow(t, 'ready'));
+    if (ready.length > 10) {
+      body.push({
+        type: 'text',
+        text: `+ อีก ${ready.length - 10} รายการ`,
+        size: 'xs',
+        color: '#94A3B8',
+        margin: 'sm',
+      });
+    }
+  } else {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({
+      type: 'text',
+      text: '— ไม่มีรายการที่นำเข้าได้ทันที —',
+      size: 'sm',
+      color: '#94A3B8',
+      align: 'center',
+      margin: 'md',
+    });
+  }
+
+  if (pending.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({
+      type: 'text',
+      text: `ยังประมวลผล — ข้ามไว้ก่อน (${pending.length})`,
+      weight: 'bold',
+      size: 'sm',
+      color: '#D97706',
+      margin: 'md',
+    });
+    for (const t of pending.slice(0, 5)) body.push(importRow(t, 'pending'));
+    if (pending.length > 5) {
+      body.push({
+        type: 'text',
+        text: `+ อีก ${pending.length - 5} รายการ`,
+        size: 'xs',
+        color: '#94A3B8',
+      });
+    }
+    body.push({
+      type: 'text',
+      text: 'รายการที่ยัง Processing ยังไม่มีจำนวนหน่วยจริง — รอให้กลายเป็น Done แล้วส่งภาพอีกครั้ง',
+      size: 'xxs',
+      color: '#D97706',
+      wrap: true,
+      margin: 'sm',
+    });
+  }
+
+  if (incomplete.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({
+      type: 'text',
+      text: `ข้อมูลไม่ครบ — ข้าม (${incomplete.length})`,
+      weight: 'bold',
+      size: 'sm',
+      color: '#DC2626',
+      margin: 'md',
+    });
+    for (const t of incomplete.slice(0, 3)) body.push(importRow(t, 'incomplete'));
+  }
+
+  if (Array.isArray(extracted.warnings) && extracted.warnings.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    for (const w of extracted.warnings.slice(0, 3)) {
+      body.push({
+        type: 'text',
+        text: '• ' + w,
+        wrap: true,
+        size: 'xxs',
+        color: '#D97706',
+      });
+    }
+  }
 
   return {
     type: 'flex',
@@ -897,50 +993,24 @@ export function transactionsImportConfirmCard({ extracted, portfolioName }) {
       size: 'mega',
       hero: hero(
         'นำเข้ารายการซื้อขาย',
-        `${extracted.source || 'อ่านจากภาพ'} · ${done.length} รายการ`,
+        `${extracted.source || 'อ่านจากภาพ'} · พบ ${all.length} รายการ`,
       ),
-      body: {
-        type: 'box',
-        layout: 'vertical',
-        spacing: 'sm',
-        contents: [
-          {
-            type: 'text',
-            text: portfolioName ? `จะบันทึกเข้าพอร์ต: ${portfolioName}` : 'ยังไม่มีพอร์ตที่ใช้งาน',
-            size: 'xs',
-            color: '#475569',
-            wrap: true,
-          },
-          { type: 'separator', margin: 'sm' },
-          ...(rows.length
-            ? rows
-            : [{ type: 'text', text: '— ไม่มีรายการที่นำเข้าได้ —', size: 'sm', color: '#94A3B8', align: 'center' }]),
-          ...tail,
-          ...(warnings.length
-            ? [
-                { type: 'separator', margin: 'md' },
-                ...warnings.slice(0, 3).map((w) => ({
-                  type: 'text', text: '• ' + w, wrap: true, size: 'xxs', color: '#D97706',
-                })),
-              ]
-            : []),
-        ],
-      },
+      body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
       footer: {
         type: 'box',
         layout: 'vertical',
         spacing: 'sm',
         contents: [
-          ...(done.length && portfolioName
+          ...(ready.length && portfolioName
             ? [{
                 type: 'button',
                 style: 'primary',
                 color: '#16A34A',
                 action: {
                   type: 'postback',
-                  label: `บันทึกทั้งหมด (${done.length})`,
+                  label: `บันทึก ${ready.length} รายการ`,
                   data: 'action=confirm-transactions-import',
-                  displayText: `บันทึก ${done.length} รายการ`,
+                  displayText: `บันทึก ${ready.length} รายการ`,
                 },
               }]
             : []),
@@ -968,18 +1038,30 @@ export function transactionsImportConfirmCard({ extracted, portfolioName }) {
   };
 }
 
-function importRow(t) {
+const ROW_TONE = {
+  ready:      { bg: '#F8FAFC' },
+  pending:    { bg: '#FEF3C7' },
+  incomplete: { bg: '#FEE2E2' },
+};
+
+function importRow(t, kind = 'ready') {
   const tone = TX_TONE[String(t.side || '').toUpperCase()] || TX_TONE.BUY;
-  const qty = Number(t.quantity) || 0;
-  const px = Number(t.price) || 0;
+  const rowTone = ROW_TONE[kind] || ROW_TONE.ready;
+  const qty = t.quantity != null ? fmtQty(Number(t.quantity)) : '—';
+  const px  = t.price != null ? fmtMoney(Number(t.price)) : null;
+  const thb = t.total_thb != null ? fmtMoney(Number(t.total_thb)) + ' THB' : null;
+  const detail = px != null
+    ? `${qty} × ${px}`
+    : (thb || 'ยังไม่มีจำนวนหน่วย');
   const dt = t.executed_at || '';
+
   return {
     type: 'box',
     layout: 'vertical',
     spacing: 'xs',
     paddingAll: '6px',
     cornerRadius: '6px',
-    backgroundColor: '#F8FAFC',
+    backgroundColor: rowTone.bg,
     contents: [
       {
         type: 'box',
@@ -992,7 +1074,7 @@ function importRow(t) {
       },
       {
         type: 'text',
-        text: `${fmtQty(qty)} × ${fmtMoney(px)}`,
+        text: detail,
         size: 'xs',
         color: '#475569',
       },

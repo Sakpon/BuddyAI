@@ -87,6 +87,7 @@ export async function getNewsSubscribedUsers(env) {
 }
 
 const PENDING_PREFIX = 'pending-portfolio:';
+const PENDING_TRANSACTIONS_PREFIX = 'pending-transactions:';
 const PENDING_TTL = 60 * 30;
 
 export async function savePendingPortfolio(env, userId, extracted) {
@@ -572,6 +573,120 @@ export async function recordSell(env, userId, portfolioId, { symbol, quantity, p
     avg_cost: oldAvg,
     position: { quantity: newQty > 1e-9 ? newQty : 0, avg_cost: newQty > 1e-9 ? oldAvg : 0 },
   };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Bulk transaction import from a vision-extracted screenshot.
+// The KV-backed pending blob mirrors the pending-portfolio flow — list lives
+// in KV with a 30-min TTL until the user taps "บันทึกทั้งหมด".
+// ────────────────────────────────────────────────────────────────────────
+
+export async function savePendingTransactions(env, userId, payload) {
+  await env.SESSION_KV.put(
+    PENDING_TRANSACTIONS_PREFIX + userId,
+    JSON.stringify(payload),
+    { expirationTtl: PENDING_TTL },
+  );
+}
+
+export async function getPendingTransactions(env, userId) {
+  const raw = await env.SESSION_KV.get(PENDING_TRANSACTIONS_PREFIX + userId);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+export async function deletePendingTransactions(env, userId) {
+  await env.SESSION_KV.delete(PENDING_TRANSACTIONS_PREFIX + userId);
+}
+
+// Apply the user's pending transaction list to the active portfolio.
+// Iterates in chronological order (oldest first) so SELLs see prior BUYs.
+// SELLs that reference a symbol with no position are skipped, not aborted,
+// and surfaced in the `errors` array for the caller to render.
+export async function applyPendingTransactions(env, userId, portfolioId) {
+  const pending = await getPendingTransactions(env, userId);
+  if (!pending || !Array.isArray(pending.transactions)) return null;
+
+  // Verify ownership.
+  const owns = await env.DB.prepare(
+    `SELECT id FROM portfolios WHERE id = ? AND user_id = ? LIMIT 1`,
+  )
+    .bind(portfolioId, userId)
+    .first();
+  if (!owns) return null;
+
+  // Sort ascending by parsed timestamp; rows without a timestamp go last
+  // (they're least likely to depend on prior rows).
+  const sorted = [...pending.transactions]
+    .map((t, idx) => ({ ...t, _idx: idx, _ts: parseExecutedAt(t.executed_at) }))
+    .sort((a, b) => {
+      if (a._ts == null && b._ts == null) return a._idx - b._idx;
+      if (a._ts == null) return 1;
+      if (b._ts == null) return -1;
+      return a._ts - b._ts;
+    });
+
+  const applied = [];
+  const skipped = [];
+  const errors = [];
+
+  for (const t of sorted) {
+    const side = String(t.side || '').toUpperCase();
+    const symbol = String(t.symbol || '').toUpperCase().trim();
+    const quantity = Number(t.quantity);
+    const price = Number(t.price);
+    const executed_at = t._ts;
+
+    if (!symbol || !Number.isFinite(quantity) || quantity <= 0
+        || !Number.isFinite(price) || price <= 0) {
+      skipped.push({ row: t, reason: 'missing_qty_or_price' });
+      continue;
+    }
+
+    const fn = side === 'BUY' ? recordBuy
+             : side === 'SELL' ? recordSell
+             : null;
+    if (!fn) {
+      skipped.push({ row: t, reason: 'unknown_side' });
+      continue;
+    }
+
+    const result = await fn(env, userId, portfolioId, {
+      symbol, quantity, price,
+      notes: pending.source ? `Imported from ${pending.source}` : 'Imported',
+    });
+
+    if (!result?.ok) {
+      errors.push({ row: t, error: result?.error || 'unknown' });
+      continue;
+    }
+
+    // If the import row had a timestamp, override the auto-set executed_at
+    // so the journey reflects when it actually happened.
+    if (executed_at != null && result.txId) {
+      await env.DB.prepare(
+        `UPDATE transactions SET executed_at = ? WHERE id = ?`,
+      )
+        .bind(executed_at, result.txId)
+        .run();
+    }
+
+    applied.push({ side, symbol, quantity, price, executed_at, txId: result.txId });
+  }
+
+  await deletePendingTransactions(env, userId);
+  return { applied, skipped, errors };
+}
+
+function parseExecutedAt(s) {
+  if (!s) return null;
+  // Expecting "YYYY-MM-DD HH:MM" in Asia/Bangkok. Treat as UTC+7 so the
+  // unix epoch we store reflects the actual moment the trade happened.
+  const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!m) return null;
+  const [_, y, mo, d, h, mi] = m;
+  const utcMs = Date.UTC(+y, +mo - 1, +d, +h - 7, +mi); // BKK = UTC+7
+  return Math.floor(utcMs / 1000);
 }
 
 export async function listTransactions(env, userId, portfolioId, limit = 50) {

@@ -3,32 +3,73 @@ const ANTHROPIC_DIRECT = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const MAX_BYTES = 5 * 1024 * 1024;
 
-const EXTRACT_PROMPT = `คุณคือผู้ช่วยอ่านภาพ "หน้าจอพอร์ตการลงทุน" ของผู้ใช้ ส่วนใหญ่มาจากแอปโบรกเกอร์ไทย เช่น Streaming, KGI, FinansiaHero, Liberator
-ภาษาบนภาพอาจเป็นไทยหรืออังกฤษ ตัวเลขใช้ , เป็นตัวคั่นพัน
+// Unified prompt: a screenshot is one of three things, and we let Claude
+// classify in the same call as the extraction. Cheaper and lower-latency
+// than a separate classify-then-extract round trip.
+const EXTRACT_PROMPT = `คุณคือผู้ช่วยอ่านภาพหน้าจอแอปการลงทุน รูปอาจเป็น 1 ใน 3 แบบ:
 
-ตอบกลับเป็น JSON เพียงอย่างเดียว ไม่มีข้อความอื่น ตามรูปแบบนี้:
+(A) "พอร์ตการลงทุน" — แสดงรายการหุ้น/กองทุนที่ผู้ใช้ถืออยู่ตอนนี้ พร้อมจำนวน ต้นทุน ราคา มูลค่า
+    ส่วนใหญ่จากแอปโบรกเกอร์ เช่น Streaming, KGI, FinansiaHero, Liberator
+
+(B) "รายการซื้อขาย / Transaction Activity / Investment Activity" — รายการประวัติการซื้อขาย
+    แต่ละรายการมี: Buy/Sell, ชื่อย่อ, จำนวนหน่วย/หุ้น, NAV หรือราคาต่อหน่วย, วันที่/เวลา
+    ส่วนใหญ่จากแอป SCB Easy, Bualuang mBanking, KMA, Krungsri Plus, Settrade Streaming
+
+(C) อย่างอื่น (ไม่ใช่ A หรือ B)
+
+ตอบ JSON เพียงอย่างเดียว ไม่มีข้อความอื่น
+
+ถ้าเป็น (A):
 {
-  "source": "Streaming|KGI|FinansiaHero|Liberator|Other",
-  "total_value": <ตัวเลข มูลค่าพอร์ตรวม หรือ null ถ้าไม่เห็น>,
-  "cash": <ตัวเลขเงินสด หรือ null>,
+  "kind": "portfolio",
+  "source": "<ชื่อแอป>",
+  "total_value": <ตัวเลข หรือ null>,
+  "cash": <ตัวเลข หรือ null>,
   "holdings": [
     {
-      "symbol": "<ตัวย่อหุ้น เช่น PTT, AOT, KBANK>",
-      "quantity": <จำนวนหุ้น>,
-      "avg_cost": <ต้นทุนเฉลี่ยต่อหุ้น หรือ null>,
-      "market_price": <ราคาตลาดต่อหุ้น หรือ null>,
+      "symbol": "<ตัวย่อ เช่น PTT, AOT, KBANK, SCBGOLD>",
+      "quantity": <จำนวน หรือ null>,
+      "avg_cost": <ต้นทุนเฉลี่ย หรือ null>,
+      "market_price": <ราคาตลาด หรือ null>,
       "market_value": <มูลค่าตลาด หรือ null>,
-      "unrealized_pl": <กำไร/ขาดทุนยังไม่รับรู้ หรือ null>,
-      "weight_pct": <% น้ำหนักในพอร์ต หรือ null>
+      "unrealized_pl": <กำไรขาดทุน หรือ null>,
+      "weight_pct": <% หรือ null>
     }
   ],
-  "warnings": [<รายการคำเตือน ถ้าตัวเลขดูไม่ครบ/อ่านไม่ออก>]
+  "warnings": [<คำเตือนถ้าตัวเลขไม่ครบ>]
 }
 
+ถ้าเป็น (B):
+{
+  "kind": "transactions",
+  "source": "<ชื่อแอป>",
+  "transactions": [
+    {
+      "side": "BUY" | "SELL",
+      "symbol": "<ตัวย่อ เช่น SCBGOLD, KFCHINA-T10PLUS-A>",
+      "quantity": <จำนวนหน่วย/หุ้น หรือ null>,
+      "price": <NAV หรือราคาต่อหน่วย หรือ null>,
+      "total_thb": <จำนวนเงิน THB หรือ null>,
+      "executed_at": "<YYYY-MM-DD HH:MM ตาม Asia/Bangkok หรือ null>",
+      "status": "done" | "processing"
+    }
+  ],
+  "warnings": [<คำเตือน>]
+}
+
+ถ้าเป็น (C):
+{ "kind": "unknown", "reason": "<สั้นๆ ภาษาไทย>" }
+
 กฎ:
-- ถ้าไม่ใช่ภาพพอร์ตหุ้น ให้ตอบ {"error": "not_portfolio", "reason": "<สั้นๆ>"}
+- ถ้าเห็นคำว่า "Processing", "To Receive Units", "กำลังดำเนินการ", "รอประมวลผล" ให้ status = "processing"
+  รายการที่เสร็จแล้ว ("Done", "สำเร็จ") status = "done"
+- ถ้ามีทั้ง Units และ NAV ให้ quantity = Units, price = NAV
+- ถ้ามีแต่ THB amount แต่ยังไม่มี units (เช่น Processing buy ของกองทุน) ให้ quantity = null
+- ถ้าเห็น "หน่วย" หรือ "Units" ให้ใช้เป็น quantity
+- symbol ตัวพิมพ์ใหญ่ทั้งหมด ตามที่อยู่บนหน้าจอ (เช่น KFCHINA-T10PLUS-A)
+- executed_at รูปแบบ "YYYY-MM-DD HH:MM" — ถ้าเห็นเฉพาะวันที่ ให้ใส่ "00:00"
 - ห้ามเดาตัวเลขที่อ่านไม่ออก ใช้ null และระบุใน warnings
-- symbol ต้องเป็นตัวพิมพ์ใหญ่ทั้งหมด`;
+- ถ้าไม่แน่ใจว่าเป็น A หรือ B (มีลักษณะของทั้งสอง) ให้เลือก B ถ้าเห็น "Buy" / "Sell" ที่ระบุวันที่ชัดเจน`;
 
 export async function fetchLineImage(env, messageId) {
   const res = await fetch(`${LINE_CONTENT}/${encodeURIComponent(messageId)}/content`, {
@@ -43,14 +84,17 @@ export async function fetchLineImage(env, messageId) {
   return { bytes: buf, mimeType };
 }
 
-export async function extractPortfolio(env, bytes, mimeType) {
+// Returns a discriminated union — { kind: 'portfolio'|'transactions'|'unknown', ...fields }.
+// The two kept-around aliases (`extractPortfolio`, `extractTransactions`) preserve the
+// old call-site shape but route through the unified extractor.
+export async function extractFromImage(env, bytes, mimeType) {
   const url = env.AI_GATEWAY_URL && env.AI_GATEWAY_URL !== 'REPLACE_WITH_YOUR_AI_GATEWAY_URL'
     ? env.AI_GATEWAY_URL.replace(/\/$/, '') + '/v1/messages'
     : ANTHROPIC_DIRECT;
 
   const body = {
-    model: env.CLAUDE_MODEL || 'claude-haiku-4-5-20251001',
-    max_tokens: 2048,
+    model: env.CLAUDE_MODEL_FAST || env.CLAUDE_MODEL || 'claude-haiku-4-5',
+    max_tokens: 3000,
     messages: [
       {
         role: 'user',
@@ -91,7 +135,29 @@ export async function extractPortfolio(env, bytes, mimeType) {
 
   const parsed = parseJsonLoose(raw);
   if (!parsed) throw new Error('vision returned non-JSON output');
+
+  // Back-compat: older error shape returned {error: 'not_portfolio'}.
+  // Map it to {kind: 'unknown'} so the new dispatcher in index.js doesn't have
+  // to special-case it.
+  if (parsed.error === 'not_portfolio') {
+    return { kind: 'unknown', reason: parsed.reason || 'not_portfolio' };
+  }
+  if (!parsed.kind) {
+    // Heuristic fallback: if it has holdings[], treat as portfolio.
+    parsed.kind = Array.isArray(parsed.holdings) ? 'portfolio'
+                : Array.isArray(parsed.transactions) ? 'transactions'
+                : 'unknown';
+  }
   return parsed;
+}
+
+// Old name kept for any callers still using it. Returns the same shape as before
+// when the image is a portfolio; for non-portfolio screenshots returns the
+// {error:'not_portfolio'} shape the old caller expected.
+export async function extractPortfolio(env, bytes, mimeType) {
+  const result = await extractFromImage(env, bytes, mimeType);
+  if (result.kind === 'portfolio') return result;
+  return { error: 'not_portfolio', reason: result.reason || result.kind };
 }
 
 function normaliseMime(m) {
@@ -113,7 +179,8 @@ function toBase64(bytes) {
 
 function parseJsonLoose(text) {
   if (!text) return null;
-  const m = text.match(/\{[\s\S]*\}/);
+  const cleaned = text.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '');
+  const m = cleaned.match(/\{[\s\S]*\}/);
   if (!m) return null;
   try {
     return JSON.parse(m[0]);

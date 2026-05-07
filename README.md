@@ -186,7 +186,9 @@ test message) are tracked as a follow-up.
 
 | User input | Action |
 |---|---|
-| *(image)* | Send a portfolio screenshot. Confirm card offers **บันทึกเป็นพอร์ตใหม่** or **อัพเดต `<activeName>`** (latter archives the current state into the snapshot history). |
+| *(image)* | Send a screenshot. The bot auto-classifies it: a **portfolio holdings** screen (broker apps like Streaming/KGI) shows the portfolio confirm card; a **transaction activity** screen (banking apps like SCB Easy / KMA / Bualuang mBanking) shows an import-confirm card. |
+| `(image: portfolio)` | Confirm card offers **บันทึกเป็นพอร์ตใหม่** or **อัพเดต `<activeName>`** (latter archives the current state into the snapshot history). |
+| `(image: transactions)` | Confirm card lists each detected transaction (BUY/SELL · symbol · qty × price · timestamp). Tap **บันทึกทั้งหมด** to apply them to the active portfolio. Rows are sorted oldest-first; SELLs without a prior position get skipped and reported. "Processing"/incomplete rows are filtered out automatically. |
 | `พอร์ต` / `portfolio` | Show the **active** portfolio summary card |
 | `พอร์ตทั้งหมด` / `portfolios` / `list` | List all saved portfolios (Flex card) — tap **เลือก** to switch active, **ลบ** to delete one |
 | `เปลี่ยนชื่อ <ชื่อใหม่>` / `rename <name>` | Rename the active portfolio |
@@ -275,6 +277,10 @@ Event types currently emitted from `src/index.js`:
 | `transaction_buy` | User logged a BUY (`ซื้อ …`) | `portfolio_id`, `tx_id`, `symbol`, `quantity`, `price`, `fees`, `new_quantity`, `new_avg_cost` |
 | `transaction_sell` | User logged a SELL (`ขาย …`) | `portfolio_id`, `tx_id`, `symbol`, `quantity`, `price`, `fees`, `realized_pl`, `new_quantity`, `new_avg_cost` |
 | `transaction_failed` | Buy/sell rejected (no position, insufficient qty, bad input) | `portfolio_id`, `side`, `symbol`, `quantity`, `price`, `error` |
+| `transactions_extracted` | Image was classified as transaction history and parsed | `source`, `importable_count`, `total_count`, `symbols[]` |
+| `transactions_extracted_empty` | Image looked like transactions but no row had qty + price | `source`, `total` |
+| `transactions_imported` | User tapped "บันทึกทั้งหมด" on the import confirm card | `portfolio_id`, `applied`, `skipped`, `errors`, `error_reasons[]` |
+| `transactions_import_cancelled` | User tapped "ยกเลิก" | — |
 
 Read a user's timeline:
 ```bash

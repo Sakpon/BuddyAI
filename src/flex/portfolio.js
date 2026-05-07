@@ -876,6 +876,205 @@ export function transactionConfirmCard({ result, portfolioName }) {
   };
 }
 
+export function transactionsImportConfirmCard({ extracted, portfolioName }) {
+  const all = extracted.transactions || [];
+  const done = all.filter((t) => t.status !== 'processing' && t.quantity != null && t.price != null);
+  const skipped = all.length - done.length;
+  const rows = done.slice(0, 10).map((t) => importRow(t));
+  const tail = done.length > 10
+    ? [{ type: 'text', text: `+ อีก ${done.length - 10} รายการ`, size: 'xs', color: '#94A3B8', margin: 'sm' }]
+    : [];
+
+  const warnings = [];
+  if (skipped > 0) warnings.push(`ข้าม ${skipped} รายการ (Processing หรือข้อมูลไม่ครบ)`);
+  if (Array.isArray(extracted.warnings)) warnings.push(...extracted.warnings);
+
+  return {
+    type: 'flex',
+    altText: 'นำเข้ารายการซื้อขายจากภาพ',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: hero(
+        'นำเข้ารายการซื้อขาย',
+        `${extracted.source || 'อ่านจากภาพ'} · ${done.length} รายการ`,
+      ),
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'text',
+            text: portfolioName ? `จะบันทึกเข้าพอร์ต: ${portfolioName}` : 'ยังไม่มีพอร์ตที่ใช้งาน',
+            size: 'xs',
+            color: '#475569',
+            wrap: true,
+          },
+          { type: 'separator', margin: 'sm' },
+          ...(rows.length
+            ? rows
+            : [{ type: 'text', text: '— ไม่มีรายการที่นำเข้าได้ —', size: 'sm', color: '#94A3B8', align: 'center' }]),
+          ...tail,
+          ...(warnings.length
+            ? [
+                { type: 'separator', margin: 'md' },
+                ...warnings.slice(0, 3).map((w) => ({
+                  type: 'text', text: '• ' + w, wrap: true, size: 'xxs', color: '#D97706',
+                })),
+              ]
+            : []),
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          ...(done.length && portfolioName
+            ? [{
+                type: 'button',
+                style: 'primary',
+                color: '#16A34A',
+                action: {
+                  type: 'postback',
+                  label: `บันทึกทั้งหมด (${done.length})`,
+                  data: 'action=confirm-transactions-import',
+                  displayText: `บันทึก ${done.length} รายการ`,
+                },
+              }]
+            : []),
+          {
+            type: 'button',
+            style: 'secondary',
+            action: {
+              type: 'postback',
+              label: 'ยกเลิก',
+              data: 'action=retry-transactions-import',
+              displayText: 'ยกเลิก',
+            },
+          },
+          {
+            type: 'text',
+            text: 'ระบบจะไล่ตามเวลาเก่าไปใหม่ การขายที่ไม่มีต้นทุนในพอร์ตจะถูกข้ามและรายงานให้ทราบ',
+            size: 'xxs',
+            color: '#94A3B8',
+            wrap: true,
+            align: 'center',
+          },
+        ],
+      },
+    },
+  };
+}
+
+function importRow(t) {
+  const tone = TX_TONE[String(t.side || '').toUpperCase()] || TX_TONE.BUY;
+  const qty = Number(t.quantity) || 0;
+  const px = Number(t.price) || 0;
+  const dt = t.executed_at || '';
+  return {
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'xs',
+    paddingAll: '6px',
+    cornerRadius: '6px',
+    backgroundColor: '#F8FAFC',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: tone.label, size: 'xs', weight: 'bold', color: tone.color, flex: 1 },
+          { type: 'text', text: t.symbol || '?', size: 'sm', weight: 'bold', color: '#0F172A', flex: 4 },
+          { type: 'text', text: dt, size: 'xxs', color: '#94A3B8', align: 'end', flex: 4 },
+        ],
+      },
+      {
+        type: 'text',
+        text: `${fmtQty(qty)} × ${fmtMoney(px)}`,
+        size: 'xs',
+        color: '#475569',
+      },
+    ],
+  };
+}
+
+export function transactionsImportResultCard({ portfolioName, applied, skipped, errors }) {
+  const lines = [
+    {
+      type: 'text',
+      text: `บันทึกสำเร็จ ${applied?.length || 0} รายการ`,
+      weight: 'bold',
+      size: 'md',
+      color: '#16A34A',
+    },
+  ];
+  if (skipped?.length) {
+    lines.push({
+      type: 'text',
+      text: `ข้าม ${skipped.length} รายการ (ข้อมูลไม่ครบ)`,
+      size: 'xs',
+      color: '#D97706',
+    });
+  }
+  if (errors?.length) {
+    lines.push({ type: 'separator', margin: 'sm' });
+    lines.push({
+      type: 'text',
+      text: `ผิดพลาด ${errors.length} รายการ`,
+      weight: 'bold',
+      size: 'sm',
+      color: '#DC2626',
+    });
+    for (const e of errors.slice(0, 5)) {
+      const r = e.row || {};
+      const reason = ERROR_LABEL[e.error] || e.error || 'unknown';
+      lines.push({
+        type: 'text',
+        text: `• ${String(r.side || '').toUpperCase()} ${r.symbol || '?'} (${fmtQty(r.quantity)}) — ${reason}`,
+        size: 'xxs',
+        color: '#DC2626',
+        wrap: true,
+      });
+    }
+  }
+  return {
+    type: 'flex',
+    altText: 'ผลการนำเข้ารายการซื้อขาย',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: hero('นำเข้ารายการซื้อขายเรียบร้อย', portfolioName || ''),
+      body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: lines },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: 'ดูรายการซื้อขายทั้งหมด',
+              data: 'action=list-transactions',
+              displayText: 'รายการซื้อขาย',
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
+const ERROR_LABEL = {
+  no_position: 'ไม่มีต้นทุนในพอร์ต',
+  insufficient_quantity: 'จำนวนไม่พอ',
+  invalid_input: 'ข้อมูลไม่ถูกต้อง',
+  portfolio_not_found: 'ไม่พบพอร์ต',
+};
+
 export function transactionsListCard({ portfolioName, transactions }) {
   const rows = (transactions || []).slice(0, 12).map((t) => transactionRow(t));
   return {

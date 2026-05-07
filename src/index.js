@@ -8,10 +8,12 @@ import {
   generatePortfolioRebalance,
 } from './claude.js';
 import {
+  applyPendingTransactions,
   clearHistory,
   clearPortfolios,
   confirmPendingPortfolio,
   deletePendingPortfolio,
+  deletePendingTransactions,
   deletePortfolioById,
   getActivePortfolio,
   getHistory,
@@ -28,6 +30,7 @@ import {
   recordSell,
   renamePortfolio,
   savePendingPortfolio,
+  savePendingTransactions,
   saveMessage,
   setActivePortfolio,
   updatePortfolioFromPending,
@@ -50,6 +53,8 @@ import {
   portfolioRebalanceCard,
   portfolioSummaryCard,
   transactionConfirmCard,
+  transactionsImportConfirmCard,
+  transactionsImportResultCard,
   transactionsListCard,
 } from './flex/portfolio.js';
 import {
@@ -62,7 +67,7 @@ import {
   verifySignature,
 } from './line.js';
 import { deleteSession, setSession } from './session.js';
-import { extractPortfolio, fetchLineImage } from './vision.js';
+import { extractFromImage, fetchLineImage } from './vision.js';
 import { fetchYahooNewsForHoldings } from './news.js';
 import { fetchUnifiedQuotesForHoldings } from './marketdata.js';
 import { adminPage } from './admin/page.js';
@@ -77,6 +82,7 @@ import {
 const HELP_TH = [
   'คำสั่งที่ใช้ได้:',
   '• ส่งภาพพอร์ตจากแอปโบรกเกอร์ — ระบบจะอ่านและสรุปให้',
+  '• ส่งภาพรายการซื้อขาย (เช่น SCB Easy Activity) — ระบบจะอ่านและให้กดยืนยันนำเข้า',
   '• "พอร์ต" — ดูพอร์ตที่ใช้งานอยู่',
   '• "พอร์ตทั้งหมด" — รายการพอร์ตทั้งหมด เลือก/ลบได้',
   '• "เปลี่ยนชื่อ <ชื่อใหม่>" — เปลี่ยนชื่อพอร์ตที่ใช้งานอยู่',
@@ -332,6 +338,36 @@ async function handlePostback(ev, env, userId) {
   if (action === 'list-transactions') {
     return showTransactions(ev, env, userId);
   }
+
+  if (action === 'confirm-transactions-import') {
+    const active = await getActivePortfolio(env, userId);
+    if (!active) {
+      return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่ใช้งาน — ส่งภาพพอร์ตเพื่อเริ่มต้นก่อนนำเข้ารายการซื้อขาย'));
+    }
+    const result = await applyPendingTransactions(env, userId, active.portfolio.id);
+    if (!result) {
+      return reply(env, ev.replyToken, textMsg('หมดเวลายืนยัน หรือไม่มีข้อมูลรายการค้างไว้ ส่งภาพใหม่อีกครั้งนะครับ'));
+    }
+    await logEvent(env, userId, 'transactions_imported', {
+      portfolio_id: active.portfolio.id,
+      applied: result.applied.length,
+      skipped: result.skipped.length,
+      errors: result.errors.length,
+      error_reasons: result.errors.map((e) => e.error),
+    });
+    return reply(env, ev.replyToken, transactionsImportResultCard({
+      portfolioName: active.portfolio.name || null,
+      applied: result.applied,
+      skipped: result.skipped,
+      errors: result.errors,
+    }));
+  }
+
+  if (action === 'retry-transactions-import') {
+    await deletePendingTransactions(env, userId);
+    await logEvent(env, userId, 'transactions_import_cancelled', null);
+    return reply(env, ev.replyToken, textMsg('ยกเลิกการนำเข้ารายการซื้อขายแล้ว'));
+  }
 }
 
 async function handleImage(ev, env, userId, messageId) {
@@ -341,16 +377,22 @@ async function handleImage(ev, env, userId, messageId) {
   let extracted;
   try {
     const { bytes, mimeType } = await fetchLineImage(env, messageId);
-    extracted = await extractPortfolio(env, bytes, mimeType);
+    extracted = await extractFromImage(env, bytes, mimeType);
   } catch (err) {
     console.error('vision error', err);
     await logEvent(env, userId, 'vision_failed', { error: String(err?.message || err).slice(0, 200) });
     return push(env, userId, textMsg('ขออภัยครับ อ่านภาพไม่สำเร็จ ลองส่งใหม่หรือใช้ภาพที่คมชัดกว่านี้ได้ไหมครับ'));
   }
 
-  if (extracted.error === 'not_portfolio') {
-    await logEvent(env, userId, 'vision_rejected', { reason: extracted.reason || 'not_portfolio' });
-    return push(env, userId, textMsg('ภาพนี้ดูไม่ใช่หน้าจอพอร์ต ลองส่งภาพหน้าจอจากแอปโบรกเกอร์อีกครั้งนะครับ'));
+  if (extracted.kind === 'transactions') {
+    return handleTransactionImage(ev, env, userId, extracted);
+  }
+
+  if (extracted.kind !== 'portfolio') {
+    await logEvent(env, userId, 'vision_rejected', { reason: extracted.reason || extracted.kind || 'unknown' });
+    return push(env, userId, textMsg(
+      'ภาพนี้ดูไม่ใช่หน้าจอพอร์ตหรือรายการซื้อขาย ลองส่งภาพหน้าจอจากแอปโบรกเกอร์/แอปธนาคารอีกครั้งนะครับ',
+    ));
   }
 
   if (!extracted.holdings || !extracted.holdings.length) {
@@ -369,6 +411,44 @@ async function handleImage(ev, env, userId, messageId) {
   await push(env, userId, [
     textMsg('อ่านพอร์ตจากภาพแล้ว ตรวจสอบความถูกต้องและกดบันทึกเพื่อเริ่มใช้งานได้เลยครับ'),
     portfolioConfirmCard(extracted, active?.portfolio || null),
+  ]);
+}
+
+async function handleTransactionImage(ev, env, userId, extracted) {
+  const all = Array.isArray(extracted.transactions) ? extracted.transactions : [];
+  const importable = all.filter(
+    (t) => t.status !== 'processing' && t.quantity != null && t.price != null && t.symbol,
+  );
+
+  if (!importable.length) {
+    await logEvent(env, userId, 'transactions_extracted_empty', {
+      source: extracted.source || null,
+      total: all.length,
+    });
+    return push(env, userId, textMsg(
+      'อ่านภาพได้ว่าเป็นรายการซื้อขาย แต่ยังไม่มีรายการที่ข้อมูลครบ (ต้องเห็นทั้งจำนวนหน่วยและราคา/NAV) ลองส่งภาพที่เห็นรายการ Done ชัดเจนอีกครั้งนะครับ',
+    ));
+  }
+
+  const active = await getActivePortfolio(env, userId).catch(() => null);
+  await savePendingTransactions(env, userId, extracted);
+  await logEvent(env, userId, 'transactions_extracted', {
+    source: extracted.source || null,
+    importable_count: importable.length,
+    total_count: all.length,
+    symbols: [...new Set(importable.map((t) => String(t.symbol).toUpperCase()))],
+  });
+
+  return push(env, userId, [
+    textMsg(
+      active
+        ? 'อ่านรายการซื้อขายจากภาพแล้ว ตรวจสอบและกด "บันทึกทั้งหมด" เพื่อเพิ่มเข้าพอร์ตของคุณ'
+        : 'อ่านรายการซื้อขายจากภาพแล้ว แต่คุณยังไม่มีพอร์ตที่ใช้งาน — ส่งภาพพอร์ตก่อน แล้วส่งภาพรายการซื้อขายอีกครั้งครับ',
+    ),
+    transactionsImportConfirmCard({
+      extracted,
+      portfolioName: active?.portfolio?.name || null,
+    }),
   ]);
 }
 

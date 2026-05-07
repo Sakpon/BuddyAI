@@ -432,11 +432,23 @@ async function handleTransactionImage(ev, env, userId, extracted) {
 
   const active = await getActivePortfolio(env, userId).catch(() => null);
   await savePendingTransactions(env, userId, extracted);
+  // Log the full extracted rows so the admin journey view can show exactly
+  // what Claude returned — invaluable when "the bot missed a transaction"
+  // turns into "did Claude not see it, or did the importable filter drop it?".
   await logEvent(env, userId, 'transactions_extracted', {
     source: extracted.source || null,
     importable_count: importable.length,
     total_count: all.length,
     symbols: [...new Set(importable.map((t) => String(t.symbol).toUpperCase()))],
+    warnings: extracted.warnings || [],
+    rows: all.map((t) => ({
+      side: t.side,
+      symbol: t.symbol,
+      quantity: t.quantity ?? null,
+      price: t.price ?? null,
+      executed_at: t.executed_at || null,
+      status: t.status || null,
+    })),
   });
 
   return push(env, userId, [

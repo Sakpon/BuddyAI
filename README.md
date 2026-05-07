@@ -13,10 +13,10 @@ context and the daily alert to that portfolio.
 - **DB:** Cloudflare D1 (`finance-db`) — `users`, `messages`
 - **Cache:** Cloudflare KV (`SESSION_KV`) — 1h session, debug logs
 - **AI:** Claude via AI Gateway (fallback: direct Anthropic). **Tiered model selection** per task:
-  - **Haiku 4.5** — chat, vision, holdings status, daily picks/news (latency- and cost-sensitive)
-  - **Sonnet 4.6** — portfolio analysis + comparison (quality matters, on-demand)
+  - **Haiku 4.5** — chat, holdings status, daily picks/news (latency- and cost-sensitive)
+  - **Sonnet 4.6** — portfolio analysis + comparison + **vision extraction** (sharp on dense screenshots)
   - **Opus 4.7** — rebalance only, with adaptive thinking + `effort: "high"` (recommendation-heavy, used rarely)
-  - Each tier overridable via `CLAUDE_MODEL_FAST` / `CLAUDE_MODEL_BALANCED` / `CLAUDE_MODEL_DEEP`
+  - Overridable via `CLAUDE_MODEL_FAST` / `CLAUDE_MODEL_BALANCED` / `CLAUDE_MODEL_DEEP` / `CLAUDE_MODEL_VISION`
 - **Daily alert:** GitHub Actions cron (`.github/workflows/daily-alert.yml`) hits the worker's `/test-alert` endpoint at 02:00 UTC = 09:00 Bangkok, Mon–Fri
 - **Daily portfolio news:** GitHub Actions cron (`.github/workflows/daily-news.yml`) hits the worker's `/test-news` endpoint at 01:00 UTC = 08:00 Bangkok, Mon–Fri — per-user per-symbol thematic news + recommended action
 

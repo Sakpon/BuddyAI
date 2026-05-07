@@ -1157,6 +1157,229 @@ const ERROR_LABEL = {
   portfolio_not_found: 'ไม่พบพอร์ต',
 };
 
+export function tradingDiaryCard({ portfolio, scope, stats, best, worst, recent }) {
+  const total = Number(stats.total_realized_pl) || 0;
+  const totalColor = total >= 0 ? '#16A34A' : '#DC2626';
+  const totalText = `${total >= 0 ? '+' : ''}${fmtMoney(total)}`;
+
+  const closed = Number(stats.closed_count) || 0;
+  const wins = Number(stats.win_count) || 0;
+  const winRate = closed > 0 ? Math.round((wins / closed) * 100) : null;
+
+  const scopeLabel = scope?.symbol
+    ? scope.symbol
+    : scope?.days
+      ? `${scope.days} วันล่าสุด`
+      : 'ทั้งหมด';
+
+  const body = [];
+
+  // Section 1 — overview
+  body.push({
+    type: 'box',
+    layout: 'vertical',
+    backgroundColor: total >= 0 ? '#16A34A14' : '#DC262614',
+    cornerRadius: '8px',
+    paddingAll: '12px',
+    spacing: 'xs',
+    contents: [
+      { type: 'text', text: 'กำไร/ขาดทุนสะสม', size: 'xs', color: '#475569' },
+      { type: 'text', text: totalText, size: 'xxl', weight: 'bold', color: totalColor },
+      ...(winRate != null
+        ? [{
+            type: 'text',
+            text: `ชนะ ${wins}/${closed} ครั้ง (${winRate}%)`,
+            size: 'xs',
+            color: '#475569',
+          }]
+        : [{
+            type: 'text',
+            text: 'ยังไม่มีรายการขายปิดสถานะ',
+            size: 'xs',
+            color: '#94A3B8',
+          }]),
+    ],
+  });
+
+  // Section 2 — quick metrics row
+  body.push({
+    type: 'box',
+    layout: 'horizontal',
+    margin: 'md',
+    contents: [
+      diaryMetric('ปิดสถานะ', String(closed)),
+      diaryMetric('ถืออยู่', String(stats.open_positions || 0)),
+      diaryMetric('Turnover', fmtMoney(stats.turnover || 0)),
+    ],
+  });
+
+  // Section 3 — best/worst
+  if (best || worst) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({
+      type: 'text',
+      text: 'เด่นสุดในช่วงนี้',
+      weight: 'bold',
+      size: 'sm',
+      color: '#0F172A',
+      margin: 'md',
+    });
+    if (best && Number(best.realized_pl) > 0) body.push(highlightRow(best, 'win'));
+    if (worst && Number(worst.realized_pl) < 0 && (!best || worst.id !== best.id)) {
+      body.push(highlightRow(worst, 'loss'));
+    }
+  }
+
+  // Section 4 — recent closed trades
+  if (recent && recent.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({
+      type: 'text',
+      text: 'รายการล่าสุด',
+      weight: 'bold',
+      size: 'sm',
+      color: '#0F172A',
+      margin: 'md',
+    });
+    for (const r of recent.slice(0, 8)) body.push(diaryRow(r));
+  }
+
+  // Footer scope buttons (don't show if already filtered to a specific symbol).
+  const scopeButtons = scope?.symbol
+    ? []
+    : [
+        scopeButton('30 วัน', 30, scope?.days === 30),
+        scopeButton('90 วัน', 90, scope?.days === 90),
+        scopeButton('ทั้งหมด', 0,  !scope?.days),
+      ];
+
+  return {
+    type: 'flex',
+    altText: 'ไดอารี่เทรด',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: hero(
+        'ไดอารี่เทรด',
+        `${portfolio?.name || 'พอร์ต'} · ${scopeLabel}`,
+      ),
+      body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          ...(scopeButtons.length
+            ? [{
+                type: 'box',
+                layout: 'horizontal',
+                spacing: 'xs',
+                contents: scopeButtons,
+              }]
+            : []),
+          {
+            type: 'text',
+            text: 'P/L คำนวณตามต้นทุนเฉลี่ยถ่วงน้ำหนัก ณ วันขาย · ข้อมูลเชิงการศึกษา',
+            size: 'xxs',
+            color: '#94A3B8',
+            wrap: true,
+            align: 'center',
+          },
+        ],
+      },
+    },
+  };
+}
+
+function diaryMetric(label, value) {
+  return {
+    type: 'box',
+    layout: 'vertical',
+    flex: 1,
+    spacing: 'xs',
+    contents: [
+      { type: 'text', text: label, size: 'xxs', color: '#94A3B8', align: 'center' },
+      { type: 'text', text: value, size: 'sm', weight: 'bold', color: '#0F172A', align: 'center' },
+    ],
+  };
+}
+
+function highlightRow(t, kind) {
+  const isWin = kind === 'win';
+  const color = isWin ? '#16A34A' : '#DC2626';
+  const label = isWin ? '✨ กำไรเด่น' : '⚠ ขาดทุนเด่น';
+  const pl = Number(t.realized_pl) || 0;
+  const days = t.holding_days != null ? `· ถือ ${t.holding_days} วัน` : '';
+  return {
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'xs',
+    paddingAll: '8px',
+    cornerRadius: '6px',
+    backgroundColor: isWin ? '#F0FDF4' : '#FEF2F2',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: label, size: 'xxs', weight: 'bold', color, flex: 3 },
+          { type: 'text', text: t.symbol || '?', size: 'sm', weight: 'bold', color: '#0F172A', align: 'end', flex: 3 },
+        ],
+      },
+      {
+        type: 'text',
+        text: `${pl >= 0 ? '+' : ''}${fmtMoney(pl)} ${days}`,
+        size: 'xs',
+        color,
+      },
+    ],
+  };
+}
+
+function diaryRow(t) {
+  const pl = Number(t.realized_pl);
+  const plColor = !Number.isFinite(pl) ? '#475569' : pl >= 0 ? '#16A34A' : '#DC2626';
+  const plText = !Number.isFinite(pl)
+    ? '—'
+    : `${pl >= 0 ? '+' : ''}${fmtMoney(pl)}`;
+  const dt = t.executed_at
+    ? new Intl.DateTimeFormat('th-TH', {
+        timeZone: 'Asia/Bangkok',
+        day: 'numeric', month: 'short',
+      }).format(new Date(Number(t.executed_at) * 1000))
+    : '';
+  const qty = Number(t.quantity) || 0;
+  const px  = Number(t.price) || 0;
+  return {
+    type: 'box',
+    layout: 'horizontal',
+    spacing: 'sm',
+    margin: 'sm',
+    contents: [
+      { type: 'text', text: t.symbol || '?', size: 'sm', weight: 'bold', color: '#0F172A', flex: 3 },
+      { type: 'text', text: `${fmtQty(qty)} × ${fmtMoney(px)}`, size: 'xxs', color: '#475569', flex: 4 },
+      { type: 'text', text: dt, size: 'xxs', color: '#94A3B8', flex: 2 },
+      { type: 'text', text: plText, size: 'xs', weight: 'bold', color: plColor, align: 'end', flex: 3 },
+    ],
+  };
+}
+
+function scopeButton(label, days, isActive) {
+  return {
+    type: 'button',
+    style: isActive ? 'primary' : 'secondary',
+    color: isActive ? '#0EA5E9' : undefined,
+    height: 'sm',
+    flex: 1,
+    action: {
+      type: 'postback',
+      label,
+      data: `action=diary-scope&days=${days}`,
+      displayText: `ไดอารี่ ${label}`,
+    },
+  };
+}
+
 export function transactionsListCard({ portfolioName, transactions }) {
   const rows = (transactions || []).slice(0, 12).map((t) => transactionRow(t));
   return {

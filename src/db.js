@@ -709,6 +709,107 @@ export async function listTransactions(env, userId, portfolioId, limit = 50) {
   return results || [];
 }
 
+// Trading-diary aggregate: realized P/L, win-rate, best/worst, recent closed
+// trades. SELLs are "closed trades" — each one carries `realized_pl` computed
+// at sell time against the running average cost (see recordSell).
+//
+// `opts.days` (number|null) — limit to last N days. null = all-time.
+// `opts.symbol` (string|null) — filter to a single symbol (uppercased).
+export async function getTradingDiary(env, userId, portfolioId, opts = {}) {
+  const owns = await env.DB.prepare(
+    `SELECT id, name FROM portfolios WHERE id = ? AND user_id = ? LIMIT 1`,
+  )
+    .bind(portfolioId, userId)
+    .first();
+  if (!owns) return null;
+
+  const sinceClause = opts.days
+    ? `AND executed_at >= unixepoch('now', '-${Number(opts.days)} days')`
+    : '';
+  const symbolClause = opts.symbol ? 'AND symbol = ?' : '';
+  const symbolBind = opts.symbol ? [String(opts.symbol).toUpperCase()] : [];
+
+  // Aggregate stats — only SELLs count as closed trades.
+  const stats = await env.DB.prepare(`
+    SELECT
+      COUNT(*) AS closed_count,
+      SUM(CASE WHEN realized_pl > 0 THEN 1 ELSE 0 END) AS win_count,
+      SUM(CASE WHEN realized_pl <= 0 THEN 1 ELSE 0 END) AS loss_count,
+      COALESCE(SUM(realized_pl), 0) AS total_realized_pl,
+      COALESCE(SUM(quantity * price), 0) AS turnover
+    FROM transactions
+    WHERE portfolio_id = ? AND side = 'SELL' ${sinceClause} ${symbolClause}
+  `).bind(portfolioId, ...symbolBind).first();
+
+  // Open positions count (current state of `holdings`).
+  const openPos = await env.DB.prepare(`
+    SELECT COUNT(*) AS n FROM holdings WHERE portfolio_id = ? AND quantity > 0
+       ${opts.symbol ? 'AND symbol = ?' : ''}
+  `).bind(portfolioId, ...symbolBind).first();
+
+  // Best winner + worst loser within scope.
+  const best = await env.DB.prepare(`
+    SELECT id, symbol, quantity, price, realized_pl, executed_at
+      FROM transactions
+     WHERE portfolio_id = ? AND side = 'SELL' AND realized_pl IS NOT NULL
+       ${sinceClause} ${symbolClause}
+     ORDER BY realized_pl DESC
+     LIMIT 1
+  `).bind(portfolioId, ...symbolBind).first();
+
+  const worst = await env.DB.prepare(`
+    SELECT id, symbol, quantity, price, realized_pl, executed_at
+      FROM transactions
+     WHERE portfolio_id = ? AND side = 'SELL' AND realized_pl IS NOT NULL
+       ${sinceClause} ${symbolClause}
+     ORDER BY realized_pl ASC
+     LIMIT 1
+  `).bind(portfolioId, ...symbolBind).first();
+
+  // Recent closed trades — last 8 SELLs in scope.
+  const { results: recent } = await env.DB.prepare(`
+    SELECT id, symbol, quantity, price, realized_pl, executed_at
+      FROM transactions
+     WHERE portfolio_id = ? AND side = 'SELL'
+       ${sinceClause} ${symbolClause}
+     ORDER BY executed_at DESC, id DESC
+     LIMIT 8
+  `).bind(portfolioId, ...symbolBind).all();
+
+  // Holding period for best/worst — earliest BUY of that symbol in this
+  // portfolio before the SELL. Approximate (weighted-avg cost basis).
+  const enrichHolding = async (row) => {
+    if (!row) return null;
+    const earliestBuy = await env.DB.prepare(`
+      SELECT MIN(executed_at) AS first_buy_at
+        FROM transactions
+       WHERE portfolio_id = ? AND symbol = ? AND side = 'BUY'
+         AND executed_at <= ?
+    `).bind(portfolioId, row.symbol, row.executed_at).first();
+    const firstBuyAt = earliestBuy?.first_buy_at;
+    const holdingDays = firstBuyAt
+      ? Math.max(0, Math.round((row.executed_at - firstBuyAt) / 86400))
+      : null;
+    return { ...row, holding_days: holdingDays };
+  };
+
+  return {
+    portfolio: { id: owns.id, name: owns.name },
+    scope: { days: opts.days || null, symbol: opts.symbol || null },
+    stats: {
+      closed_count: stats?.closed_count || 0,
+      win_count: stats?.win_count || 0,
+      loss_count: stats?.loss_count || 0,
+      total_realized_pl: stats?.total_realized_pl || 0,
+      turnover: stats?.turnover || 0,
+      open_positions: openPos?.n || 0,
+    },
+    best: await enrichHolding(best),
+    worst: await enrichHolding(worst),
+    recent: recent || [],
+  };
+}
+
 function safeParse(s) {
   try { return JSON.parse(s); } catch { return s; }
 }

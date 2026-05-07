@@ -23,6 +23,7 @@ import {
   getPortfolioSnapshots,
   getPortfolioWithHoldings,
   getSubscribedUsers,
+  getTradingDiary,
   listPortfolios,
   listTransactions,
   logEvent,
@@ -52,6 +53,7 @@ import {
   portfolioListCard,
   portfolioRebalanceCard,
   portfolioSummaryCard,
+  tradingDiaryCard,
   transactionConfirmCard,
   transactionsImportConfirmCard,
   transactionsImportResultCard,
@@ -90,6 +92,7 @@ const HELP_TH = [
   '• "ซื้อ <SYMBOL> <จำนวน> @ <ราคา>" — บันทึกการซื้อหุ้น (เช่น ซื้อ PTT 100 @ 35.50)',
   '• "ขาย <SYMBOL> <จำนวน> @ <ราคา>" — บันทึกการขายหุ้น',
   '• "รายการซื้อขาย" — ดูประวัติการซื้อขายของพอร์ต',
+  '• "ไดอารี่" — สรุป P/L สะสม + win-rate + รายการขายที่เด่น (พิมพ์ "ไดอารี่ 30" หรือ "ไดอารี่ <SYM>" เพื่อกรอง)',
   '• "วิเคราะห์พอร์ต" — ขอความเห็นจาก AI',
   '• "ปรับพอร์ต" — ขอข้อเสนอการ rebalance จาก AI',
   '• "เปรียบเทียบพอร์ต" — เทียบพอร์ตที่ใช้งานกับอันก่อนหน้า',
@@ -339,6 +342,11 @@ async function handlePostback(ev, env, userId) {
     return showTransactions(ev, env, userId);
   }
 
+  if (action === 'diary-scope') {
+    const days = Number(data.get('days')) || 0;
+    return showTradingDiary(ev, env, userId, { days: days > 0 ? days : null, symbol: null });
+  }
+
   if (action === 'confirm-transactions-import') {
     const active = await getActivePortfolio(env, userId);
     if (!active) {
@@ -533,6 +541,9 @@ async function handleText(ev, env, userId, text) {
   if (cmd === 'list-transactions') {
     return showTransactions(ev, env, userId);
   }
+  if (cmd === 'diary') {
+    return showTradingDiary(ev, env, userId, match.arg);
+  }
   if (cmd === 'rename-portfolio') {
     const newName = match.arg;
     if (!newName) {
@@ -674,6 +685,26 @@ async function showTransactions(ev, env, userId) {
     portfolioName: active.portfolio.name || null,
     transactions,
   }));
+}
+
+async function showTradingDiary(ev, env, userId, arg) {
+  const active = await getActivePortfolio(env, userId);
+  if (!active) {
+    return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่ใช้งาน — ส่งภาพพอร์ตเพื่อเริ่มต้น'));
+  }
+  const days = arg?.days || null;
+  const symbol = arg?.symbol || null;
+  const diary = await getTradingDiary(env, userId, active.portfolio.id, { days, symbol });
+  if (!diary) {
+    return reply(env, ev.replyToken, textMsg('ไม่พบข้อมูลพอร์ต'));
+  }
+  await logEvent(env, userId, 'diary_viewed', {
+    portfolio_id: active.portfolio.id,
+    scope: { days, symbol },
+    closed_count: diary.stats.closed_count,
+    total_realized_pl: diary.stats.total_realized_pl,
+  });
+  return reply(env, ev.replyToken, tradingDiaryCard(diary));
 }
 
 async function showHoldingsStatus(ev, env, userId) {
@@ -953,6 +984,19 @@ function matchCommand(text) {
   if (['ล้างพอร์ต', 'clear portfolio'].includes(tl)) return { cmd: 'clear-portfolio' };
   if (['รายการซื้อขาย', 'ประวัติซื้อขาย', 'transactions', 'tx'].includes(tl))
     return { cmd: 'list-transactions' };
+
+  // Trading diary — three forms:
+  //   ไดอารี่              (active portfolio, all-time)
+  //   ไดอารี่ 30 / ไดอารี่ 90  (last N days)
+  //   ไดอารี่ <SYM>           (per-symbol zoom)
+  const diaryMatch = t.match(/^(ไดอารี่|ไดอารี|diary|journal)(?:\s+(.+))?$/i);
+  if (diaryMatch) {
+    const arg = (diaryMatch[2] || '').trim();
+    if (!arg) return { cmd: 'diary', arg: { days: null, symbol: null } };
+    if (/^\d+$/.test(arg)) return { cmd: 'diary', arg: { days: Number(arg), symbol: null } };
+    if (/^[A-Za-z0-9.\-]+$/.test(arg)) return { cmd: 'diary', arg: { days: null, symbol: arg.toUpperCase() } };
+    return { cmd: 'diary', arg: { days: null, symbol: null } };
+  }
 
   // Buy / sell — accept Thai or English verb, optional "@" before price,
   // optional commas in numbers. Examples that all match:

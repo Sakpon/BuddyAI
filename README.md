@@ -12,7 +12,11 @@ context and the daily alert to that portfolio.
 - **Runtime:** Cloudflare Workers (Wrangler ^3)
 - **DB:** Cloudflare D1 (`finance-db`) — `users`, `messages`
 - **Cache:** Cloudflare KV (`SESSION_KV`) — 1h session, debug logs
-- **AI:** Claude (`claude-haiku-4-5-20251001`) via AI Gateway, fallback to direct Anthropic
+- **AI:** Claude via AI Gateway (fallback: direct Anthropic). **Tiered model selection** per task:
+  - **Haiku 4.5** — chat, vision, holdings status, daily picks/news (latency- and cost-sensitive)
+  - **Sonnet 4.6** — portfolio analysis + comparison (quality matters, on-demand)
+  - **Opus 4.7** — rebalance only, with adaptive thinking + `effort: "high"` (recommendation-heavy, used rarely)
+  - Each tier overridable via `CLAUDE_MODEL_FAST` / `CLAUDE_MODEL_BALANCED` / `CLAUDE_MODEL_DEEP`
 - **Daily alert:** GitHub Actions cron (`.github/workflows/daily-alert.yml`) hits the worker's `/test-alert` endpoint at 02:00 UTC = 09:00 Bangkok, Mon–Fri
 - **Daily portfolio news:** GitHub Actions cron (`.github/workflows/daily-news.yml`) hits the worker's `/test-news` endpoint at 01:00 UTC = 08:00 Bangkok, Mon–Fri — per-user per-symbol thematic news + recommended action
 
@@ -182,11 +186,16 @@ test message) are tracked as a follow-up.
 
 | User input | Action |
 |---|---|
-| *(image)* | Send a portfolio screenshot. Confirm card offers **บันทึกเป็นพอร์ตใหม่** or **อัพเดต `<activeName>`** (latter archives the current state into the snapshot history). |
+| *(image)* | Send a screenshot. The bot auto-classifies it: a **portfolio holdings** screen (broker apps like Streaming/KGI) shows the portfolio confirm card; a **transaction activity** screen (banking apps like SCB Easy / KMA / Bualuang mBanking) shows an import-confirm card. |
+| `(image: portfolio)` | Confirm card offers **บันทึกเป็นพอร์ตใหม่** or **อัพเดต `<activeName>`** (latter archives the current state into the snapshot history). |
+| `(image: transactions)` | Confirm card lists each detected transaction (BUY/SELL · symbol · qty × price · timestamp). Tap **บันทึกทั้งหมด** to apply them to the active portfolio. Rows are sorted oldest-first; SELLs without a prior position get skipped and reported. "Processing"/incomplete rows are filtered out automatically. |
 | `พอร์ต` / `portfolio` | Show the **active** portfolio summary card |
 | `พอร์ตทั้งหมด` / `portfolios` / `list` | List all saved portfolios (Flex card) — tap **เลือก** to switch active, **ลบ** to delete one |
 | `เปลี่ยนชื่อ <ชื่อใหม่>` / `rename <name>` | Rename the active portfolio |
 | `สถานะหุ้น` / `status` | Live price + day change + P&L per held symbol, with a per-symbol AI action label (Hold / Watch / Trim / Add / Alert). Quotes route per market: **US → Finnhub**, **HK → Sina Finance (real-time)**, **SET → set.or.th (~15-min delayed)**, with **Stooq EOD** as a fallback for any symbol the primaries miss. |
+| `ซื้อ <SYMBOL> <จำนวน> @ <ราคา>` / `buy …` | Append a BUY transaction to the active portfolio. Updates the holding's quantity + weighted-average cost and replies with a Flex confirm card. Example: `ซื้อ PTT 100 @ 35.50`. |
+| `ขาย <SYMBOL> <จำนวน> @ <ราคา>` / `sell …` | Append a SELL transaction. Computes realized P/L against the existing avg cost, decrements (or removes) the holding, and replies with a Flex confirm card. |
+| `รายการซื้อขาย` / `transactions` | Show the active portfolio's transaction history as a Flex card |
 | `วิเคราะห์พอร์ต` | AI commentary on the active portfolio |
 | `ปรับพอร์ต` | AI rebalance suggestions on the active portfolio |
 | `เปรียบเทียบพอร์ต` / `compare` | Diff between active portfolio and the most recent non-active one |
@@ -265,6 +274,13 @@ Event types currently emitted from `src/index.js`:
 | `holdings_status_requested` | `สถานะหุ้น` returned a per-holding status card | `portfolio_id`, `real_quote_count`, `quote_sources: { yahoo, stooq, none }`, `items[{symbol, action, day_change_pct, pl_pct, source}]` |
 | `holdings_status_failed` | Status command errored | `error` |
 | `portfolio_updated` | User tapped **อัพเดต `<active>`** on the confirm card | `portfolio_id`, `snapshot_id`, `name`, `total_value`, `symbols` |
+| `transaction_buy` | User logged a BUY (`ซื้อ …`) | `portfolio_id`, `tx_id`, `symbol`, `quantity`, `price`, `fees`, `new_quantity`, `new_avg_cost` |
+| `transaction_sell` | User logged a SELL (`ขาย …`) | `portfolio_id`, `tx_id`, `symbol`, `quantity`, `price`, `fees`, `realized_pl`, `new_quantity`, `new_avg_cost` |
+| `transaction_failed` | Buy/sell rejected (no position, insufficient qty, bad input) | `portfolio_id`, `side`, `symbol`, `quantity`, `price`, `error` |
+| `transactions_extracted` | Image was classified as transaction history and parsed | `source`, `importable_count`, `total_count`, `symbols[]` |
+| `transactions_extracted_empty` | Image looked like transactions but no row had qty + price | `source`, `total` |
+| `transactions_imported` | User tapped "บันทึกทั้งหมด" on the import confirm card | `portfolio_id`, `applied`, `skipped`, `errors`, `error_reasons[]` |
+| `transactions_import_cancelled` | User tapped "ยกเลิก" | — |
 
 Read a user's timeline:
 ```bash

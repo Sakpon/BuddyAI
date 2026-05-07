@@ -87,6 +87,7 @@ export async function getNewsSubscribedUsers(env) {
 }
 
 const PENDING_PREFIX = 'pending-portfolio:';
+const PENDING_TRANSACTIONS_PREFIX = 'pending-transactions:';
 const PENDING_TTL = 60 * 30;
 
 export async function savePendingPortfolio(env, userId, extracted) {
@@ -438,6 +439,274 @@ export async function getJourney(env, userId, limit = 100) {
     created_at: r.created_at,
     payload: r.payload ? safeParse(r.payload) : null,
   }));
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Buy / sell transactions on a portfolio.
+//
+// `transactions` is the append-only ledger; `holdings` continues to reflect
+// the current position so analyse/rebalance/news queries don't need to
+// re-derive it. Recording a trade does both in sequence.
+// ────────────────────────────────────────────────────────────────────────
+
+export async function recordBuy(env, userId, portfolioId, { symbol, quantity, price, fees = 0, notes = null }) {
+  const sym = String(symbol || '').toUpperCase().trim();
+  const qty = Number(quantity);
+  const px  = Number(price);
+  if (!sym || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(px) || px <= 0) {
+    return { ok: false, error: 'invalid_input' };
+  }
+
+  const owns = await env.DB.prepare(
+    `SELECT id FROM portfolios WHERE id = ? AND user_id = ? LIMIT 1`,
+  )
+    .bind(portfolioId, userId)
+    .first();
+  if (!owns) return { ok: false, error: 'portfolio_not_found' };
+
+  const txInsert = await env.DB.prepare(
+    `INSERT INTO transactions (user_id, portfolio_id, symbol, side, quantity, price, fees, notes)
+     VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?)`,
+  )
+    .bind(userId, portfolioId, sym, qty, px, numOrNull(fees) || 0, notes || null)
+    .run();
+  const txId = txInsert?.meta?.last_row_id || null;
+
+  const existing = await env.DB.prepare(
+    `SELECT id, quantity, avg_cost FROM holdings WHERE portfolio_id = ? AND symbol = ? LIMIT 1`,
+  )
+    .bind(portfolioId, sym)
+    .first();
+
+  let newQty, newAvg;
+  if (existing) {
+    const oldQty = Number(existing.quantity) || 0;
+    const oldAvg = Number(existing.avg_cost) || 0;
+    newQty = oldQty + qty;
+    newAvg = newQty > 0 ? ((oldQty * oldAvg) + (qty * px)) / newQty : px;
+    await env.DB.prepare(
+      `UPDATE holdings SET quantity = ?, avg_cost = ? WHERE id = ?`,
+    )
+      .bind(newQty, newAvg, existing.id)
+      .run();
+  } else {
+    newQty = qty;
+    newAvg = px;
+    await env.DB.prepare(
+      `INSERT INTO holdings (portfolio_id, symbol, quantity, avg_cost, market_price)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+      .bind(portfolioId, sym, qty, px, px)
+      .run();
+  }
+
+  return {
+    ok: true,
+    txId,
+    symbol: sym,
+    side: 'BUY',
+    quantity: qty,
+    price: px,
+    fees: Number(fees) || 0,
+    total: qty * px + (Number(fees) || 0),
+    position: { quantity: newQty, avg_cost: newAvg },
+  };
+}
+
+export async function recordSell(env, userId, portfolioId, { symbol, quantity, price, fees = 0, notes = null }) {
+  const sym = String(symbol || '').toUpperCase().trim();
+  const qty = Number(quantity);
+  const px  = Number(price);
+  if (!sym || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(px) || px <= 0) {
+    return { ok: false, error: 'invalid_input' };
+  }
+
+  const owns = await env.DB.prepare(
+    `SELECT id FROM portfolios WHERE id = ? AND user_id = ? LIMIT 1`,
+  )
+    .bind(portfolioId, userId)
+    .first();
+  if (!owns) return { ok: false, error: 'portfolio_not_found' };
+
+  const existing = await env.DB.prepare(
+    `SELECT id, quantity, avg_cost FROM holdings WHERE portfolio_id = ? AND symbol = ? LIMIT 1`,
+  )
+    .bind(portfolioId, sym)
+    .first();
+  if (!existing) return { ok: false, error: 'no_position' };
+
+  const oldQty = Number(existing.quantity) || 0;
+  if (qty > oldQty + 1e-9) return { ok: false, error: 'insufficient_quantity', held: oldQty };
+
+  const oldAvg = Number(existing.avg_cost) || 0;
+  const fee = numOrNull(fees) || 0;
+  const realizedPl = (px - oldAvg) * qty - fee;
+
+  const txInsert = await env.DB.prepare(
+    `INSERT INTO transactions (user_id, portfolio_id, symbol, side, quantity, price, fees, realized_pl, notes)
+     VALUES (?, ?, ?, 'SELL', ?, ?, ?, ?, ?)`,
+  )
+    .bind(userId, portfolioId, sym, qty, px, fee, realizedPl, notes || null)
+    .run();
+  const txId = txInsert?.meta?.last_row_id || null;
+
+  const newQty = oldQty - qty;
+  if (newQty <= 1e-9) {
+    await env.DB.prepare(`DELETE FROM holdings WHERE id = ?`).bind(existing.id).run();
+  } else {
+    // Selling does not change average cost.
+    await env.DB.prepare(`UPDATE holdings SET quantity = ? WHERE id = ?`)
+      .bind(newQty, existing.id)
+      .run();
+  }
+
+  return {
+    ok: true,
+    txId,
+    symbol: sym,
+    side: 'SELL',
+    quantity: qty,
+    price: px,
+    fees: fee,
+    total: qty * px - fee,
+    realized_pl: realizedPl,
+    avg_cost: oldAvg,
+    position: { quantity: newQty > 1e-9 ? newQty : 0, avg_cost: newQty > 1e-9 ? oldAvg : 0 },
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Bulk transaction import from a vision-extracted screenshot.
+// The KV-backed pending blob mirrors the pending-portfolio flow — list lives
+// in KV with a 30-min TTL until the user taps "บันทึกทั้งหมด".
+// ────────────────────────────────────────────────────────────────────────
+
+export async function savePendingTransactions(env, userId, payload) {
+  await env.SESSION_KV.put(
+    PENDING_TRANSACTIONS_PREFIX + userId,
+    JSON.stringify(payload),
+    { expirationTtl: PENDING_TTL },
+  );
+}
+
+export async function getPendingTransactions(env, userId) {
+  const raw = await env.SESSION_KV.get(PENDING_TRANSACTIONS_PREFIX + userId);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+export async function deletePendingTransactions(env, userId) {
+  await env.SESSION_KV.delete(PENDING_TRANSACTIONS_PREFIX + userId);
+}
+
+// Apply the user's pending transaction list to the active portfolio.
+// Iterates in chronological order (oldest first) so SELLs see prior BUYs.
+// SELLs that reference a symbol with no position are skipped, not aborted,
+// and surfaced in the `errors` array for the caller to render.
+export async function applyPendingTransactions(env, userId, portfolioId) {
+  const pending = await getPendingTransactions(env, userId);
+  if (!pending || !Array.isArray(pending.transactions)) return null;
+
+  // Verify ownership.
+  const owns = await env.DB.prepare(
+    `SELECT id FROM portfolios WHERE id = ? AND user_id = ? LIMIT 1`,
+  )
+    .bind(portfolioId, userId)
+    .first();
+  if (!owns) return null;
+
+  // Sort ascending by parsed timestamp; rows without a timestamp go last
+  // (they're least likely to depend on prior rows).
+  const sorted = [...pending.transactions]
+    .map((t, idx) => ({ ...t, _idx: idx, _ts: parseExecutedAt(t.executed_at) }))
+    .sort((a, b) => {
+      if (a._ts == null && b._ts == null) return a._idx - b._idx;
+      if (a._ts == null) return 1;
+      if (b._ts == null) return -1;
+      return a._ts - b._ts;
+    });
+
+  const applied = [];
+  const skipped = [];
+  const errors = [];
+
+  for (const t of sorted) {
+    const side = String(t.side || '').toUpperCase();
+    const symbol = String(t.symbol || '').toUpperCase().trim();
+    const quantity = Number(t.quantity);
+    const price = Number(t.price);
+    const executed_at = t._ts;
+
+    if (!symbol || !Number.isFinite(quantity) || quantity <= 0
+        || !Number.isFinite(price) || price <= 0) {
+      skipped.push({ row: t, reason: 'missing_qty_or_price' });
+      continue;
+    }
+
+    const fn = side === 'BUY' ? recordBuy
+             : side === 'SELL' ? recordSell
+             : null;
+    if (!fn) {
+      skipped.push({ row: t, reason: 'unknown_side' });
+      continue;
+    }
+
+    const result = await fn(env, userId, portfolioId, {
+      symbol, quantity, price,
+      notes: pending.source ? `Imported from ${pending.source}` : 'Imported',
+    });
+
+    if (!result?.ok) {
+      errors.push({ row: t, error: result?.error || 'unknown' });
+      continue;
+    }
+
+    // If the import row had a timestamp, override the auto-set executed_at
+    // so the journey reflects when it actually happened.
+    if (executed_at != null && result.txId) {
+      await env.DB.prepare(
+        `UPDATE transactions SET executed_at = ? WHERE id = ?`,
+      )
+        .bind(executed_at, result.txId)
+        .run();
+    }
+
+    applied.push({ side, symbol, quantity, price, executed_at, txId: result.txId });
+  }
+
+  await deletePendingTransactions(env, userId);
+  return { applied, skipped, errors };
+}
+
+function parseExecutedAt(s) {
+  if (!s) return null;
+  // Expecting "YYYY-MM-DD HH:MM" in Asia/Bangkok. Treat as UTC+7 so the
+  // unix epoch we store reflects the actual moment the trade happened.
+  const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!m) return null;
+  const [_, y, mo, d, h, mi] = m;
+  const utcMs = Date.UTC(+y, +mo - 1, +d, +h - 7, +mi); // BKK = UTC+7
+  return Math.floor(utcMs / 1000);
+}
+
+export async function listTransactions(env, userId, portfolioId, limit = 50) {
+  const owns = await env.DB.prepare(
+    `SELECT 1 FROM portfolios WHERE id = ? AND user_id = ? LIMIT 1`,
+  )
+    .bind(portfolioId, userId)
+    .first();
+  if (!owns) return [];
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, symbol, side, quantity, price, fees, realized_pl, notes, executed_at
+       FROM transactions
+      WHERE portfolio_id = ?
+      ORDER BY executed_at DESC, id DESC
+      LIMIT ?`,
+  )
+    .bind(portfolioId, limit)
+    .all();
+  return results || [];
 }
 
 function safeParse(s) {

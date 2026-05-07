@@ -6,11 +6,13 @@ FINNHUB_KEY=your_finnhub_api_key
 ADMIN_USER=admin_username
 ADMIN_PASS=strong_random_password
 
-# Optional — model tier overrides. Defaults are baked into src/claude.js:
-#   FAST     = claude-haiku-4-5    (chat, vision, status, cron picks/news)
-#   BALANCED = claude-sonnet-4-6   (portfolio analysis + comparison)
+# Optional — model tier overrides. Defaults are baked into src/claude.js / vision.js:
+#   FAST     = claude-haiku-4-5    (chat, status, cron picks/news)
+#   BALANCED = claude-sonnet-4-6   (portfolio analysis + comparison + vision extraction)
 #   DEEP     = claude-opus-4-7     (rebalance, with adaptive thinking)
+#   VISION   = falls back to BALANCED — flip to Haiku if you want cheaper screenshot reads
 # Override any of them to roll back per task without redeploying the worker.
 # CLAUDE_MODEL_FAST=claude-haiku-4-5
 # CLAUDE_MODEL_BALANCED=claude-sonnet-4-6
 # CLAUDE_MODEL_DEEP=claude-opus-4-7
+# CLAUDE_MODEL_VISION=claude-haiku-4-5

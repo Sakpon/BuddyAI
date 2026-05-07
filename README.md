@@ -196,6 +196,9 @@ test message) are tracked as a follow-up.
 | `ซื้อ <SYMBOL> <จำนวน> @ <ราคา>` / `buy …` | Append a BUY transaction to the active portfolio. Updates the holding's quantity + weighted-average cost and replies with a Flex confirm card. Example: `ซื้อ PTT 100 @ 35.50`. |
 | `ขาย <SYMBOL> <จำนวน> @ <ราคา>` / `sell …` | Append a SELL transaction. Computes realized P/L against the existing avg cost, decrements (or removes) the holding, and replies with a Flex confirm card. |
 | `รายการซื้อขาย` / `transactions` | Show the active portfolio's transaction history as a Flex card |
+| `ไดอารี่` / `diary` | Trading-diary card: total realized P/L, win rate, biggest win/loss with holding-period in days, last 8 closed trades. Footer buttons re-scope to **30 / 90 / ทั้งหมด**. |
+| `ไดอารี่ <SYM>` | Diary zoomed into a single symbol's history |
+| `ไดอารี่ 30` / `ไดอารี่ 90` | Same as the footer buttons, in text form |
 | `วิเคราะห์พอร์ต` | AI commentary on the active portfolio |
 | `ปรับพอร์ต` | AI rebalance suggestions on the active portfolio |
 | `เปรียบเทียบพอร์ต` / `compare` | Diff between active portfolio and the most recent non-active one |
@@ -281,6 +284,7 @@ Event types currently emitted from `src/index.js`:
 | `transactions_extracted_empty` | Image looked like transactions but no row had qty + price | `source`, `total` |
 | `transactions_imported` | User tapped "บันทึกทั้งหมด" on the import confirm card | `portfolio_id`, `applied`, `skipped`, `errors`, `error_reasons[]` |
 | `transactions_import_cancelled` | User tapped "ยกเลิก" | — |
+| `diary_viewed` | User opened the trading diary | `portfolio_id`, `scope: {days, symbol}`, `closed_count`, `total_realized_pl` |
 
 Read a user's timeline:
 ```bash

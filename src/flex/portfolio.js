@@ -1053,7 +1053,7 @@ function importRow(t, kind = 'ready') {
   const detail = px != null
     ? `${qty} × ${px}`
     : (thb || 'ยังไม่มีจำนวนหน่วย');
-  const dt = t.executed_at || '';
+  const dt = fmtDate(t.executed_at);
 
   return {
     type: 'box',
@@ -1342,12 +1342,7 @@ function diaryRow(t) {
   const plText = !Number.isFinite(pl)
     ? '—'
     : `${pl >= 0 ? '+' : ''}${fmtMoney(pl)}`;
-  const dt = t.executed_at
-    ? new Intl.DateTimeFormat('th-TH', {
-        timeZone: 'Asia/Bangkok',
-        day: 'numeric', month: 'short',
-      }).format(new Date(Number(t.executed_at) * 1000))
-    : '';
+  const dt = fmtDate(t.executed_at);
   const qty = Number(t.quantity) || 0;
   const px  = Number(t.price) || 0;
   return {
@@ -1358,7 +1353,7 @@ function diaryRow(t) {
     contents: [
       { type: 'text', text: t.symbol || '?', size: 'sm', weight: 'bold', color: '#0F172A', flex: 3 },
       { type: 'text', text: `${fmtQty(qty)} × ${fmtMoney(px)}`, size: 'xxs', color: '#475569', flex: 4 },
-      { type: 'text', text: dt, size: 'xxs', color: '#94A3B8', flex: 2 },
+      { type: 'text', text: dt, size: 'xxs', color: '#94A3B8', flex: 3 },
       { type: 'text', text: plText, size: 'xs', weight: 'bold', color: plColor, align: 'end', flex: 3 },
     ],
   };
@@ -1420,15 +1415,7 @@ function transactionRow(t) {
   const qty = Number(t.quantity) || 0;
   const px  = Number(t.price) || 0;
   const total = qty * px;
-  const dt = t.executed_at
-    ? new Intl.DateTimeFormat('th-TH', {
-        timeZone: 'Asia/Bangkok',
-        day: 'numeric',
-        month: 'short',
-        hour: '2-digit',
-        minute: '2-digit',
-      }).format(new Date(Number(t.executed_at) * 1000))
-    : '';
+  const dt = fmtDate(t.executed_at, { withTime: true });
 
   const plLine = t.realized_pl != null
     ? [{
@@ -1473,6 +1460,35 @@ function fmtQty(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return String(n);
   return v.toLocaleString('en-US', { maximumFractionDigits: 4 });
+}
+
+// Centralised date formatter. Forces the Gregorian calendar so the year is
+// "2025", not "2568" — Buddhist Era reads as 1968-ish to anyone scanning
+// trade history. Output examples (Asia/Bangkok):
+//   fmtDate(unix)                          → "16 พ.ค. 2025"
+//   fmtDate(unix, { withTime: true })      → "16 พ.ค. 2025 12:43"
+//   fmtDate("2025-05-16 12:43")            → "16 พ.ค. 2025"  (string input)
+function fmtDate(input, opts = {}) {
+  if (input == null || input === '') return '';
+  let d;
+  if (typeof input === 'string') {
+    const m = input.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+    if (!m) return input;
+    const [, y, mo, day, h, mi] = m;
+    // Imported strings are BKK wall-clock time; rebase to UTC so the formatter
+    // doesn't double-shift them.
+    d = new Date(Date.UTC(+y, +mo - 1, +day, +(h || 0) - 7, +(mi || 0)));
+  } else {
+    d = new Date(Number(input) * 1000);
+  }
+  return new Intl.DateTimeFormat('th-TH', {
+    timeZone: 'Asia/Bangkok',
+    calendar: 'gregory',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    ...(opts.withTime ? { hour: '2-digit', minute: '2-digit', hour12: false } : {}),
+  }).format(d);
 }
 
 function portfolioListRow(p) {

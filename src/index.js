@@ -829,13 +829,17 @@ async function showPortfolioHistory(ev, env, userId) {
 
 function formatTakenAt(unix) {
   if (!unix) return '—';
+  // Force Gregorian calendar so the year reads as "2025" not "2568"
+  // (Buddhist Era), matching the rest of the bot's date display.
   return new Intl.DateTimeFormat('th-TH', {
     timeZone: 'Asia/Bangkok',
+    calendar: 'gregory',
     year: 'numeric',
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    hour12: false,
   }).format(new Date(unix * 1000));
 }
 

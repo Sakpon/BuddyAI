@@ -582,17 +582,9 @@ export async function recordSell(env, userId, portfolioId, { symbol, quantity, p
 // ────────────────────────────────────────────────────────────────────────
 
 export async function savePendingTransactions(env, userId, payload) {
-  // Default each transaction to selected=true so the bulk-confirm flow
-  // continues to work as a single tap. Per-row toggling can flip individual
-  // entries off via togglePendingTransactionSelection.
-  const transactions = Array.isArray(payload?.transactions) ? payload.transactions : [];
-  const blob = {
-    ...payload,
-    selected: transactions.map(() => true),
-  };
   await env.SESSION_KV.put(
     PENDING_TRANSACTIONS_PREFIX + userId,
-    JSON.stringify(blob),
+    JSON.stringify(payload),
     { expirationTtl: PENDING_TTL },
   );
 }
@@ -600,35 +592,11 @@ export async function savePendingTransactions(env, userId, payload) {
 export async function getPendingTransactions(env, userId) {
   const raw = await env.SESSION_KV.get(PENDING_TRANSACTIONS_PREFIX + userId);
   if (!raw) return null;
-  try {
-    const blob = JSON.parse(raw);
-    // Back-compat: blobs saved before the selected[] field exists default
-    // every row to selected.
-    if (!Array.isArray(blob.selected) && Array.isArray(blob.transactions)) {
-      blob.selected = blob.transactions.map(() => true);
-    }
-    return blob;
-  } catch { return null; }
+  try { return JSON.parse(raw); } catch { return null; }
 }
 
 export async function deletePendingTransactions(env, userId) {
   await env.SESSION_KV.delete(PENDING_TRANSACTIONS_PREFIX + userId);
-}
-
-// Flip the per-row selected flag. Returns the updated blob (or null if no
-// pending list exists). Out-of-range idx is a no-op.
-export async function togglePendingTransactionSelection(env, userId, idx) {
-  const blob = await getPendingTransactions(env, userId);
-  if (!blob || !Array.isArray(blob.transactions)) return null;
-  const i = Number(idx);
-  if (!Number.isInteger(i) || i < 0 || i >= blob.transactions.length) return blob;
-  blob.selected[i] = !blob.selected[i];
-  await env.SESSION_KV.put(
-    PENDING_TRANSACTIONS_PREFIX + userId,
-    JSON.stringify(blob),
-    { expirationTtl: PENDING_TTL },
-  );
-  return blob;
 }
 
 // Apply the user's pending transaction list to the active portfolio.
@@ -647,16 +615,10 @@ export async function applyPendingTransactions(env, userId, portfolioId) {
     .first();
   if (!owns) return null;
 
-  // Filter to rows the user has explicitly selected (default is all-selected
-  // if the blob predates per-row selection). Then sort ascending by parsed
-  // timestamp; rows without a timestamp go last (they're least likely to
-  // depend on prior rows).
-  const selected = Array.isArray(pending.selected)
-    ? pending.selected
-    : pending.transactions.map(() => true);
-  const sorted = pending.transactions
+  // Sort ascending by parsed timestamp; rows without a timestamp go last
+  // (they're least likely to depend on prior rows).
+  const sorted = [...pending.transactions]
     .map((t, idx) => ({ ...t, _idx: idx, _ts: parseExecutedAt(t.executed_at) }))
-    .filter((t) => selected[t._idx] !== false)
     .sort((a, b) => {
       if (a._ts == null && b._ts == null) return a._idx - b._idx;
       if (a._ts == null) return 1;

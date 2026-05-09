@@ -20,6 +20,7 @@ import {
   getJourney,
   getNewsSubscribedUsers,
   getPendingPortfolio,
+  getPendingTransactions,
   getPortfolioSnapshots,
   getPortfolioWithHoldings,
   getSubscribedUsers,
@@ -34,6 +35,7 @@ import {
   savePendingTransactions,
   saveMessage,
   setActivePortfolio,
+  togglePendingTransactionSelection,
   updatePortfolioFromPending,
   subscribeAlert,
   subscribeNews,
@@ -345,6 +347,19 @@ async function handlePostback(ev, env, userId) {
   if (action === 'diary-scope') {
     const days = Number(data.get('days')) || 0;
     return showTradingDiary(ev, env, userId, { days: days > 0 ? days : null, symbol: null });
+  }
+
+  if (action === 'toggle-import-row') {
+    const idx = Number(data.get('idx'));
+    const blob = await togglePendingTransactionSelection(env, userId, idx);
+    if (!blob) {
+      return reply(env, ev.replyToken, textMsg('หมดเวลายืนยัน — ส่งภาพรายการซื้อขายอีกครั้งครับ'));
+    }
+    const active = await getActivePortfolio(env, userId).catch(() => null);
+    return reply(env, ev.replyToken, transactionsImportConfirmCard({
+      extracted: blob,
+      portfolioName: active?.portfolio?.name || null,
+    }));
   }
 
   if (action === 'confirm-transactions-import') {

@@ -878,15 +878,23 @@ export function transactionConfirmCard({ result, portfolioName }) {
 
 export function transactionsImportConfirmCard({ extracted, portfolioName }) {
   const all = extracted.transactions || [];
-  // Three buckets — surfaced separately so the user sees exactly what gets
-  // imported and what gets skipped (and why).
-  const ready = all.filter(
-    (t) => t.status !== 'processing' && t.quantity != null && t.price != null,
+  const selected = Array.isArray(extracted.selected)
+    ? extracted.selected
+    : all.map(() => true);
+
+  // Tag every row with its original index so per-row postbacks can target it
+  // even after we filter into ready/pending/incomplete buckets.
+  const tagged = all.map((t, idx) => ({ t, idx }));
+  const ready = tagged.filter(
+    ({ t }) => t.status !== 'processing' && t.quantity != null && t.price != null,
   );
-  const pending = all.filter((t) => t.status === 'processing');
-  const incomplete = all.filter(
-    (t) => t.status !== 'processing' && (t.quantity == null || t.price == null),
+  const pending = tagged.filter(({ t }) => t.status === 'processing');
+  const incomplete = tagged.filter(
+    ({ t }) => t.status !== 'processing' && (t.quantity == null || t.price == null),
   );
+
+  // Selected count drives the bulk-confirm button label.
+  const selectedReadyCount = ready.filter(({ idx }) => selected[idx] !== false).length;
 
   const body = [
     {
@@ -901,14 +909,31 @@ export function transactionsImportConfirmCard({ extracted, portfolioName }) {
   if (ready.length) {
     body.push({ type: 'separator', margin: 'md' });
     body.push({
-      type: 'text',
-      text: `พร้อมบันทึก (${ready.length})`,
-      weight: 'bold',
-      size: 'sm',
-      color: '#16A34A',
+      type: 'box',
+      layout: 'horizontal',
       margin: 'md',
+      contents: [
+        {
+          type: 'text',
+          text: `พร้อมบันทึก (${selectedReadyCount}/${ready.length})`,
+          weight: 'bold',
+          size: 'sm',
+          color: '#16A34A',
+          flex: 4,
+        },
+        {
+          type: 'text',
+          text: 'แตะเพื่อเลือก',
+          size: 'xxs',
+          color: '#94A3B8',
+          align: 'end',
+          flex: 3,
+        },
+      ],
     });
-    for (const t of ready.slice(0, 10)) body.push(importRow(t, 'ready'));
+    for (const { t, idx } of ready.slice(0, 10)) {
+      body.push(importRow(t, 'ready', { idx, selected: selected[idx] !== false }));
+    }
     if (ready.length > 10) {
       body.push({
         type: 'text',
@@ -940,7 +965,7 @@ export function transactionsImportConfirmCard({ extracted, portfolioName }) {
       color: '#D97706',
       margin: 'md',
     });
-    for (const t of pending.slice(0, 5)) body.push(importRow(t, 'pending'));
+    for (const { t } of pending.slice(0, 5)) body.push(importRow(t, 'pending'));
     if (pending.length > 5) {
       body.push({
         type: 'text',
@@ -969,7 +994,7 @@ export function transactionsImportConfirmCard({ extracted, portfolioName }) {
       color: '#DC2626',
       margin: 'md',
     });
-    for (const t of incomplete.slice(0, 3)) body.push(importRow(t, 'incomplete'));
+    for (const { t } of incomplete.slice(0, 3)) body.push(importRow(t, 'incomplete'));
   }
 
   if (Array.isArray(extracted.warnings) && extracted.warnings.length) {
@@ -1001,16 +1026,16 @@ export function transactionsImportConfirmCard({ extracted, portfolioName }) {
         layout: 'vertical',
         spacing: 'sm',
         contents: [
-          ...(ready.length && portfolioName
+          ...(selectedReadyCount > 0 && portfolioName
             ? [{
                 type: 'button',
                 style: 'primary',
                 color: '#16A34A',
                 action: {
                   type: 'postback',
-                  label: `บันทึก ${ready.length} รายการ`,
+                  label: `บันทึก ${selectedReadyCount} รายการที่เลือก`,
                   data: 'action=confirm-transactions-import',
-                  displayText: `บันทึก ${ready.length} รายการ`,
+                  displayText: `บันทึก ${selectedReadyCount} รายการ`,
                 },
               }]
             : []),
@@ -1026,7 +1051,7 @@ export function transactionsImportConfirmCard({ extracted, portfolioName }) {
           },
           {
             type: 'text',
-            text: 'ระบบจะไล่ตามเวลาเก่าไปใหม่ การขายที่ไม่มีต้นทุนในพอร์ตจะถูกข้ามและรายงานให้ทราบ',
+            text: 'แตะรายการเพื่อเลือก/ยกเลิก · ระบบจะไล่ตามเวลาเก่าไปใหม่ · การขายที่ไม่มีต้นทุนในพอร์ตจะถูกข้าม',
             size: 'xxs',
             color: '#94A3B8',
             wrap: true,
@@ -1044,7 +1069,7 @@ const ROW_TONE = {
   incomplete: { bg: '#FEE2E2' },
 };
 
-function importRow(t, kind = 'ready') {
+function importRow(t, kind = 'ready', selectInfo = null) {
   const tone = TX_TONE[String(t.side || '').toUpperCase()] || TX_TONE.BUY;
   const rowTone = ROW_TONE[kind] || ROW_TONE.ready;
   const qty = t.quantity != null ? fmtQty(Number(t.quantity)) : '—';
@@ -1055,20 +1080,44 @@ function importRow(t, kind = 'ready') {
     : (thb || 'ยังไม่มีจำนวนหน่วย');
   const dt = fmtDate(t.executed_at);
 
-  return {
+  // Per-row selection only applies to "ready" rows. The pending/incomplete
+  // buckets are non-importable regardless and stay non-tappable.
+  const selectable = selectInfo != null;
+  const isSelected = selectable && selectInfo.selected !== false;
+  const checkbox = selectable
+    ? {
+        type: 'text',
+        text: isSelected ? '☑' : '☐',
+        size: 'lg',
+        color: isSelected ? '#16A34A' : '#94A3B8',
+        flex: 0,
+        margin: 'none',
+      }
+    : null;
+
+  // Deselected rows fade their text so the user can scan what's still in.
+  const symbolColor = !selectable || isSelected ? '#0F172A' : '#94A3B8';
+  const detailColor = !selectable || isSelected ? '#475569' : '#94A3B8';
+  const bg = !selectable || isSelected
+    ? rowTone.bg
+    : '#E2E8F0'; // muted gray for unselected ready rows
+
+  const box = {
     type: 'box',
     layout: 'vertical',
     spacing: 'xs',
     paddingAll: '6px',
     cornerRadius: '6px',
-    backgroundColor: rowTone.bg,
+    backgroundColor: bg,
     contents: [
       {
         type: 'box',
         layout: 'horizontal',
+        spacing: 'sm',
         contents: [
+          ...(checkbox ? [checkbox] : []),
           { type: 'text', text: tone.label, size: 'xs', weight: 'bold', color: tone.color, flex: 1 },
-          { type: 'text', text: t.symbol || '?', size: 'sm', weight: 'bold', color: '#0F172A', flex: 4 },
+          { type: 'text', text: t.symbol || '?', size: 'sm', weight: 'bold', color: symbolColor, flex: 4 },
           { type: 'text', text: dt, size: 'xxs', color: '#94A3B8', align: 'end', flex: 4 },
         ],
       },
@@ -1076,10 +1125,24 @@ function importRow(t, kind = 'ready') {
         type: 'text',
         text: detail,
         size: 'xs',
-        color: '#475569',
+        color: detailColor,
       },
     ],
   };
+
+  // Tapping a ready row toggles its selected state.
+  if (selectable) {
+    box.action = {
+      type: 'postback',
+      label: isSelected ? `ยกเลิก ${t.symbol || ''}` : `เลือก ${t.symbol || ''}`,
+      data: `action=toggle-import-row&idx=${selectInfo.idx}`,
+      displayText: isSelected
+        ? `ยกเลิก ${t.symbol || ''}`
+        : `เลือก ${t.symbol || ''}`,
+    };
+  }
+
+  return box;
 }
 
 export function transactionsImportResultCard({ portfolioName, applied, skipped, errors }) {

@@ -1525,6 +1525,276 @@ function fmtQty(n) {
   return v.toLocaleString('en-US', { maximumFractionDigits: 4 });
 }
 
+// Timeline view of a portfolio's snapshots. Caller passes the current state +
+// the snapshot list (newest-first). Each row shows date, total value, and a
+// signed delta vs the immediately-earlier point.
+export function portfolioHistoryCard({ portfolio, snapshots }) {
+  // Build oldest → newest so deltas roll forward and we can flip back to newest-first
+  // for display.
+  const series = [];
+  for (const s of (snapshots || []).slice().reverse()) {
+    series.push({
+      label: fmtDate(s.taken_at),
+      value: numOrNullValue(s.total_value),
+      count: (s.holdings || []).length,
+      isCurrent: false,
+    });
+  }
+  series.push({
+    label: fmtDate(portfolio.taken_at),
+    value: numOrNullValue(portfolio.total_value),
+    count: null,
+    isCurrent: true,
+  });
+  // Compute deltas vs previous entry.
+  for (let i = 0; i < series.length; i++) {
+    if (i === 0 || series[i].value == null || series[i - 1].value == null) {
+      series[i].delta = null;
+      series[i].deltaPct = null;
+    } else {
+      const d = series[i].value - series[i - 1].value;
+      series[i].delta = d;
+      series[i].deltaPct = series[i - 1].value !== 0
+        ? (d / series[i - 1].value) * 100
+        : null;
+    }
+  }
+  // Display newest first.
+  const display = series.slice().reverse();
+
+  const totalChange = (() => {
+    const oldest = series[0];
+    const newest = series[series.length - 1];
+    if (!oldest || !newest || oldest.value == null || newest.value == null) return null;
+    return {
+      abs: newest.value - oldest.value,
+      pct: oldest.value !== 0 ? ((newest.value - oldest.value) / oldest.value) * 100 : null,
+    };
+  })();
+
+  const body = [];
+
+  if (totalChange) {
+    const color = totalChange.abs >= 0 ? '#16A34A' : '#DC2626';
+    body.push({
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: color + '14',
+      cornerRadius: '8px',
+      paddingAll: '12px',
+      spacing: 'xs',
+      contents: [
+        { type: 'text', text: 'ผลตั้งแต่เริ่มเก็บประวัติ', size: 'xs', color: '#475569' },
+        {
+          type: 'text',
+          text: `${totalChange.abs >= 0 ? '+' : ''}${fmtMoney(totalChange.abs)}` +
+                (totalChange.pct != null ? ` (${totalChange.abs >= 0 ? '+' : ''}${totalChange.pct.toFixed(1)}%)` : ''),
+          size: 'xl',
+          weight: 'bold',
+          color,
+        },
+      ],
+    });
+  }
+
+  body.push({ type: 'separator', margin: 'md' });
+  body.push({
+    type: 'text',
+    text: 'ไทม์ไลน์',
+    weight: 'bold',
+    size: 'sm',
+    color: '#0F172A',
+    margin: 'md',
+  });
+
+  for (const row of display) body.push(historyRow(row));
+
+  return {
+    type: 'flex',
+    altText: `ประวัติพอร์ต ${portfolio.name || ''}`,
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: hero('ประวัติพอร์ต', `${portfolio.name || 'พอร์ต'} · ${snapshots.length + 1} จุด`),
+      body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'text',
+            text: 'ส่งภาพพอร์ตล่าสุดแล้วกด "อัพเดต" เพื่อเก็บ snapshot ใหม่',
+            size: 'xxs',
+            color: '#94A3B8',
+            wrap: true,
+            align: 'center',
+          },
+        ],
+      },
+    },
+  };
+}
+
+function historyRow(row) {
+  const isCurrent = row.isCurrent;
+  const bg = isCurrent ? '#0EA5E914' : '#F8FAFC';
+  const dateColor = isCurrent ? '#0EA5E9' : '#475569';
+  const valueText = row.value != null ? fmtMoney(row.value) : '—';
+  const meta = isCurrent
+    ? 'ตอนนี้'
+    : (row.count != null ? `${row.count} ตัว` : '');
+  const deltaText = row.delta != null
+    ? `${row.delta >= 0 ? '+' : ''}${fmtMoney(row.delta)}` +
+      (row.deltaPct != null ? ` (${row.delta >= 0 ? '+' : ''}${row.deltaPct.toFixed(1)}%)` : '')
+    : '';
+  const deltaColor = row.delta == null ? '#94A3B8' : row.delta >= 0 ? '#16A34A' : '#DC2626';
+
+  return {
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'xs',
+    paddingAll: '8px',
+    cornerRadius: '6px',
+    backgroundColor: bg,
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: row.label, size: 'xs', weight: 'bold', color: dateColor, flex: 3 },
+          { type: 'text', text: meta, size: 'xxs', color: '#94A3B8', align: 'end', flex: 2 },
+        ],
+      },
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: valueText, size: 'md', weight: 'bold', color: '#0F172A', flex: 3 },
+          { type: 'text', text: deltaText, size: 'xs', weight: 'bold', color: deltaColor, align: 'end', flex: 4 },
+        ],
+      },
+    ],
+  };
+}
+
+// Reusable acknowledgment / info card for short success/info messages.
+// Replaces plain textMsg() for the post-action confirmations users see after
+// portfolio save / update / switch / rename / delete / subscribe / unsubscribe.
+//
+//   tone     : 'success' | 'info' | 'warning'    (default 'success')
+//   title    : header text                       (required)
+//   subtitle : optional smaller line under the title
+//   lines    : array of strings, OR { label, value } objects, OR { text, color }
+//   cta      : optional { label, data, displayText } to render a footer button
+export function actionAckCard({ tone = 'success', title, subtitle, lines = [], cta = null }) {
+  const TONE = {
+    success: { bar: '#16A34A', tint: '#16A34A14', icon: '✓' },
+    info:    { bar: '#0EA5E9', tint: '#0EA5E914', icon: 'ℹ︎' },
+    warning: { bar: '#D97706', tint: '#D9770614', icon: '⚠' },
+  };
+  const t = TONE[tone] || TONE.success;
+
+  const body = [
+    {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: t.tint,
+      cornerRadius: '8px',
+      paddingAll: '12px',
+      spacing: 'xs',
+      contents: [
+        {
+          type: 'box',
+          layout: 'horizontal',
+          spacing: 'sm',
+          contents: [
+            { type: 'text', text: t.icon, size: 'lg', color: t.bar, flex: 0 },
+            { type: 'text', text: title, size: 'md', weight: 'bold', color: t.bar, wrap: true, flex: 5 },
+          ],
+        },
+        ...(subtitle
+          ? [{ type: 'text', text: subtitle, size: 'xs', color: '#475569', wrap: true, margin: 'sm' }]
+          : []),
+      ],
+    },
+  ];
+
+  if (lines && lines.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    for (const line of lines) {
+      if (typeof line === 'string') {
+        body.push({ type: 'text', text: line, size: 'sm', color: '#1E293B', wrap: true });
+      } else if (line && typeof line === 'object') {
+        if (line.label !== undefined) {
+          body.push({
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: String(line.label), size: 'sm', color: '#475569', flex: 2 },
+              {
+                type: 'text',
+                text: String(line.value ?? '—'),
+                size: 'sm',
+                color: line.color || '#0F172A',
+                weight: 'bold',
+                align: 'end',
+                flex: 3,
+                wrap: true,
+              },
+            ],
+          });
+        } else if (line.text) {
+          body.push({
+            type: 'text',
+            text: String(line.text),
+            size: 'sm',
+            color: line.color || '#1E293B',
+            wrap: true,
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    type: 'flex',
+    altText: title,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
+      ...(cta
+        ? {
+            footer: {
+              type: 'box',
+              layout: 'vertical',
+              contents: [
+                {
+                  type: 'button',
+                  style: 'primary',
+                  color: t.bar,
+                  height: 'sm',
+                  action: {
+                    type: 'postback',
+                    label: cta.label,
+                    data: cta.data,
+                    displayText: cta.displayText || cta.label,
+                  },
+                },
+              ],
+            },
+          }
+        : {}),
+    },
+  };
+}
+
+function numOrNullValue(v) {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 // Centralised date formatter. Forces the Gregorian calendar so the year is
 // "2025", not "2568" — Buddhist Era reads as 1968-ish to anyone scanning
 // trade history. Output examples (Asia/Bangkok):

@@ -54,6 +54,7 @@ import {
   portfolioCompareCard,
   portfolioConfirmCard,
   portfolioHistoryCard,
+  portfolioHistoryCarousel,
   portfolioListCard,
   portfolioRebalanceCard,
   portfolioSummaryCard,
@@ -914,26 +915,42 @@ async function showHoldingsStatus(ev, env, userId) {
 }
 
 async function showPortfolioHistory(ev, env, userId) {
-  const active = await getActivePortfolio(env, userId);
-  if (!active) {
+  // List every saved portfolio. If only one exists, show its single bubble;
+  // otherwise render a carousel with the active portfolio first and the rest
+  // ordered by most-recently-updated.
+  const portfolios = await listPortfolios(env, userId);
+  if (!portfolios.length) {
     return reply(env, ev.replyToken, actionAckCard({
       tone: 'info',
       title: 'ยังไม่มีพอร์ตที่ใช้งาน',
       subtitle: 'ส่งภาพพอร์ตจากแอปโบรกเกอร์เพื่อเริ่มต้น',
     }));
   }
-  const snapshots = await getPortfolioSnapshots(env, userId, active.portfolio.id, 20);
-  if (!snapshots.length) {
+
+  // Sort: active first, then by taken_at desc (already the listPortfolios order).
+  const sorted = [...portfolios].sort((a, b) => {
+    const aActive = a.is_active === 1 ? 1 : 0;
+    const bActive = b.is_active === 1 ? 1 : 0;
+    if (aActive !== bActive) return bActive - aActive;
+    return (b.taken_at || 0) - (a.taken_at || 0);
+  });
+
+  const items = await Promise.all(sorted.map(async (p) => {
+    const snapshots = await getPortfolioSnapshots(env, userId, p.id, 20).catch(() => []);
+    return { portfolio: p, snapshots, isActive: p.is_active === 1 };
+  }));
+
+  // If a single portfolio has no snapshots either, the active-only friendly
+  // message is more useful than a carousel of one bubble with no timeline.
+  if (items.length === 1 && items[0].snapshots.length === 0) {
     return reply(env, ev.replyToken, actionAckCard({
       tone: 'info',
-      title: `"${active.portfolio.name}" ยังไม่มีประวัติ`,
+      title: `"${items[0].portfolio.name}" ยังไม่มีประวัติ`,
       subtitle: 'ครั้งต่อไปที่ส่งภาพ ให้กด "อัพเดต" เพื่อเก็บ snapshot ไว้ดูย้อนหลังได้',
     }));
   }
-  return reply(env, ev.replyToken, portfolioHistoryCard({
-    portfolio: active.portfolio,
-    snapshots,
-  }));
+
+  return reply(env, ev.replyToken, portfolioHistoryCarousel(items));
 }
 
 function formatTakenAt(unix) {

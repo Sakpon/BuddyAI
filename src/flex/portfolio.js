@@ -1528,11 +1528,37 @@ function fmtQty(n) {
 // Timeline view of a portfolio's snapshots. Caller passes the current state +
 // the snapshot list (newest-first). Each row shows date, total value, and a
 // signed delta vs the immediately-earlier point.
-export function portfolioHistoryCard({ portfolio, snapshots }) {
-  // Build oldest → newest so deltas roll forward and we can flip back to newest-first
-  // for display.
+export function portfolioHistoryCard({ portfolio, snapshots, isActive = true }) {
+  return {
+    type: 'flex',
+    altText: `ประวัติพอร์ต ${portfolio.name || ''}`,
+    contents: buildHistoryBubble({ portfolio, snapshots, isActive }),
+  };
+}
+
+// Carousel version — one bubble per portfolio so the user can swipe between
+// histories of every saved portfolio. Active portfolio shows first; non-active
+// bubbles carry a "เลือกเป็นพอร์ตที่ใช้งาน" CTA at the footer.
+export function portfolioHistoryCarousel(items) {
+  const bubbles = (items || [])
+    .slice(0, 12) // LINE caps carousels at 12 bubbles
+    .map(({ portfolio, snapshots, isActive }) =>
+      buildHistoryBubble({ portfolio, snapshots: snapshots || [], isActive: !!isActive }),
+    );
+  return {
+    type: 'flex',
+    altText: `ประวัติพอร์ตทั้งหมด (${bubbles.length})`,
+    contents: bubbles.length === 1
+      ? bubbles[0]
+      : { type: 'carousel', contents: bubbles },
+  };
+}
+
+function buildHistoryBubble({ portfolio, snapshots, isActive = true }) {
+  const list = Array.isArray(snapshots) ? snapshots : [];
+  // Build oldest → newest so deltas roll forward; flip for display.
   const series = [];
-  for (const s of (snapshots || []).slice().reverse()) {
+  for (const s of list.slice().reverse()) {
     series.push({
       label: fmtDate(s.taken_at),
       value: numOrNullValue(s.total_value),
@@ -1546,7 +1572,6 @@ export function portfolioHistoryCard({ portfolio, snapshots }) {
     count: null,
     isCurrent: true,
   });
-  // Compute deltas vs previous entry.
   for (let i = 0; i < series.length; i++) {
     if (i === 0 || series[i].value == null || series[i - 1].value == null) {
       series[i].delta = null;
@@ -1559,7 +1584,6 @@ export function portfolioHistoryCard({ portfolio, snapshots }) {
         : null;
     }
   }
-  // Display newest first.
   const display = series.slice().reverse();
 
   const totalChange = (() => {
@@ -1576,6 +1600,9 @@ export function portfolioHistoryCard({ portfolio, snapshots }) {
 
   if (totalChange) {
     const color = totalChange.abs >= 0 ? '#16A34A' : '#DC2626';
+    const pctText = totalChange.pct != null
+      ? `${totalChange.abs >= 0 ? '+' : ''}${totalChange.pct.toFixed(1)}%`
+      : '—';
     body.push({
       type: 'box',
       layout: 'vertical',
@@ -1587,12 +1614,12 @@ export function portfolioHistoryCard({ portfolio, snapshots }) {
         { type: 'text', text: 'ผลตั้งแต่เริ่มเก็บประวัติ', size: 'xs', color: '#475569' },
         {
           type: 'text',
-          text: `${totalChange.abs >= 0 ? '+' : ''}${fmtMoney(totalChange.abs)}` +
-                (totalChange.pct != null ? ` (${totalChange.abs >= 0 ? '+' : ''}${totalChange.pct.toFixed(1)}%)` : ''),
+          text: `${totalChange.abs >= 0 ? '+' : ''}${fmtMoney(totalChange.abs)}`,
           size: 'xl',
           weight: 'bold',
           color,
         },
+        { type: 'text', text: pctText, size: 'sm', weight: 'bold', color },
       ],
     });
   }
@@ -1609,28 +1636,44 @@ export function portfolioHistoryCard({ portfolio, snapshots }) {
 
   for (const row of display) body.push(historyRow(row));
 
+  // Subtitle conveys both name + how many points; "ใช้งานอยู่" badge if active.
+  const subtitle = `${portfolio.name || 'พอร์ต'} · ${series.length} จุด${isActive ? ' · ใช้งานอยู่' : ''}`;
+
   return {
-    type: 'flex',
-    altText: `ประวัติพอร์ต ${portfolio.name || ''}`,
-    contents: {
-      type: 'bubble',
-      size: 'mega',
-      hero: hero('ประวัติพอร์ต', `${portfolio.name || 'พอร์ต'} · ${snapshots.length + 1} จุด`),
-      body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
-      footer: {
-        type: 'box',
-        layout: 'vertical',
-        contents: [
-          {
-            type: 'text',
-            text: 'ส่งภาพพอร์ตล่าสุดแล้วกด "อัพเดต" เพื่อเก็บ snapshot ใหม่',
-            size: 'xxs',
-            color: '#94A3B8',
-            wrap: true,
-            align: 'center',
-          },
-        ],
-      },
+    type: 'bubble',
+    size: 'mega',
+    hero: hero('ประวัติพอร์ต', subtitle),
+    body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      spacing: 'sm',
+      contents: [
+        ...(!isActive
+          ? [{
+              type: 'button',
+              style: 'primary',
+              color: '#0EA5E9',
+              height: 'sm',
+              action: {
+                type: 'postback',
+                label: 'เลือกเป็นพอร์ตที่ใช้งาน',
+                data: `action=select-portfolio&id=${portfolio.id}`,
+                displayText: `เลือก ${portfolio.name || 'พอร์ต'}`,
+              },
+            }]
+          : []),
+        {
+          type: 'text',
+          text: isActive
+            ? 'ส่งภาพพอร์ตล่าสุดแล้วกด "อัพเดต" เพื่อเก็บ snapshot ใหม่'
+            : 'แตะปุ่มด้านบนเพื่อสลับมาใช้พอร์ตนี้',
+          size: 'xxs',
+          color: '#94A3B8',
+          wrap: true,
+          align: 'center',
+        },
+      ],
     },
   };
 }
@@ -1645,17 +1688,23 @@ function historyRow(row) {
   const meta = isCurrent
     ? 'ตอนนี้'
     : (row.count != null ? `${row.count} ตัว` : '—');
-  const deltaText = row.delta != null
-    ? `${row.delta >= 0 ? '+' : ''}${fmtMoney(row.delta)}` +
-      (row.deltaPct != null ? ` (${row.delta >= 0 ? '+' : ''}${row.deltaPct.toFixed(1)}%)` : '')
+  const hasDelta = row.delta != null;
+  const deltaAmtText = hasDelta
+    ? `${row.delta >= 0 ? '+' : ''}${fmtMoney(row.delta)}`
     : '—';
-  const deltaColor = row.delta == null ? '#94A3B8' : row.delta >= 0 ? '#16A34A' : '#DC2626';
+  const deltaPctText = hasDelta && row.deltaPct != null
+    ? `${row.delta >= 0 ? '+' : ''}${row.deltaPct.toFixed(1)}%`
+    : '—';
+  const deltaColor = !hasDelta ? '#94A3B8' : row.delta >= 0 ? '#16A34A' : '#DC2626';
 
+  // Stack the delta on its own line beneath the value, with amount and percent
+  // also stacked vertically. Two-column layouts with both on one line truncate
+  // when numbers go above ~100k (LINE doesn't wrap small text by default).
   return {
     type: 'box',
     layout: 'vertical',
     spacing: 'xs',
-    paddingAll: '8px',
+    paddingAll: '10px',
     cornerRadius: '6px',
     backgroundColor: bg,
     contents: [
@@ -1668,11 +1717,18 @@ function historyRow(row) {
         ],
       },
       {
+        type: 'text',
+        text: valueText,
+        size: 'lg',
+        weight: 'bold',
+        color: '#0F172A',
+      },
+      {
         type: 'box',
         layout: 'horizontal',
         contents: [
-          { type: 'text', text: valueText, size: 'md', weight: 'bold', color: '#0F172A', flex: 3 },
-          { type: 'text', text: deltaText, size: 'xs', weight: 'bold', color: deltaColor, align: 'end', flex: 4 },
+          { type: 'text', text: deltaAmtText, size: 'xs', weight: 'bold', color: deltaColor, flex: 1 },
+          { type: 'text', text: deltaPctText, size: 'xs', weight: 'bold', color: deltaColor, align: 'end', flex: 1 },
         ],
       },
     ],

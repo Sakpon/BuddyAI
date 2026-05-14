@@ -1640,13 +1640,15 @@ function historyRow(row) {
   const bg = isCurrent ? '#0EA5E914' : '#F8FAFC';
   const dateColor = isCurrent ? '#0EA5E9' : '#475569';
   const valueText = row.value != null ? fmtMoney(row.value) : '—';
+  // LINE Flex returns 400 on empty text fields and silently drops the whole
+  // reply — fall back to "—" instead of "" for missing meta/delta.
   const meta = isCurrent
     ? 'ตอนนี้'
-    : (row.count != null ? `${row.count} ตัว` : '');
+    : (row.count != null ? `${row.count} ตัว` : '—');
   const deltaText = row.delta != null
     ? `${row.delta >= 0 ? '+' : ''}${fmtMoney(row.delta)}` +
       (row.deltaPct != null ? ` (${row.delta >= 0 ? '+' : ''}${row.deltaPct.toFixed(1)}%)` : '')
-    : '';
+    : '—';
   const deltaColor = row.delta == null ? '#94A3B8' : row.delta >= 0 ? '#16A34A' : '#DC2626';
 
   return {

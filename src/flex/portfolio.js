@@ -147,6 +147,32 @@ function hero(title, subtitle) {
   };
 }
 
+// Brighter hero used by ปรับพอร์ต — cyan band with a faux gradient via a
+// stacked semi-transparent overlay box, so the card feels recommend-forward
+// rather than research-report.
+function rebalanceHero(title, subtitle) {
+  return {
+    type: 'box',
+    layout: 'vertical',
+    backgroundColor: '#0EA5E9',
+    paddingAll: '20px',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'sm',
+        contents: [
+          { type: 'text', text: '🎯', size: 'xl', flex: 0 },
+          { type: 'text', text: title, color: '#FFFFFF', weight: 'bold', size: 'lg', flex: 5, gravity: 'center' },
+        ],
+      },
+      ...(subtitle
+        ? [{ type: 'text', text: subtitle, color: '#E0F2FE', size: 'xs', margin: 'sm', wrap: true }]
+        : []),
+    ],
+  };
+}
+
 function totalsBox(p) {
   const items = [];
   if (p.total_value != null) items.push(kv('มูลค่ารวม', fmtMoney(p.total_value)));
@@ -377,10 +403,10 @@ function sectorRow(s) {
 }
 
 const ACTION_TONE = {
-  Trim:  { color: '#DC2626', label: 'ลดน้ำหนัก' },
-  Add:   { color: '#16A34A', label: 'ทยอยเพิ่ม' },
-  Hold:  { color: '#0EA5E9', label: 'ถือ' },
-  Watch: { color: '#D97706', label: 'เฝ้าดู' },
+  Trim:  { color: '#DC2626', label: 'ลดน้ำหนัก', emoji: '🔻', bg: '#FEE2E2' },
+  Add:   { color: '#16A34A', label: 'ทยอยเพิ่ม', emoji: '🟢', bg: '#DCFCE7' },
+  Hold:  { color: '#0EA5E9', label: 'ถือ',         emoji: '✋', bg: '#E0F2FE' },
+  Watch: { color: '#D97706', label: 'เฝ้าดู',      emoji: '👀', bg: '#FEF3C7' },
 };
 
 export function portfolioRebalanceCard(rebalance) {
@@ -483,7 +509,7 @@ export function portfolioRebalanceCard(rebalance) {
     contents: {
       type: 'bubble',
       size: 'mega',
-      hero: hero('ปรับพอร์ต', rebalance.summary || 'ข้อเสนอจาก AI'),
+      hero: rebalanceHero('ปรับพอร์ต', rebalance.summary || 'ข้อเสนอจาก AI'),
       body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
       footer: {
         type: 'box',
@@ -550,33 +576,101 @@ function diversifierRow(d) {
 function rebalanceRow(s) {
   const tone = ACTION_TONE[s.action] || ACTION_TONE.Watch;
   const symbol = s.symbol || '?';
-  const cur = s.current_weight_pct != null ? `${Math.round(s.current_weight_pct)}%` : '—';
-  const tgt = s.target_weight_pct != null ? `${Math.round(s.target_weight_pct)}%` : '—';
+  const curRaw = s.current_weight_pct != null ? Number(s.current_weight_pct) : null;
+  const tgtRaw = s.target_weight_pct != null ? Number(s.target_weight_pct) : null;
+  const curText = curRaw != null ? `${Math.round(curRaw)}%` : '—';
+  const tgtText = tgtRaw != null ? `${Math.round(tgtRaw)}%` : '—';
+  const arrow = (curRaw != null && tgtRaw != null)
+    ? (tgtRaw > curRaw ? '↑' : tgtRaw < curRaw ? '↓' : '→')
+    : '→';
+
   return {
     type: 'box',
     layout: 'vertical',
-    margin: 'sm',
     spacing: 'xs',
+    paddingAll: '10px',
+    cornerRadius: '8px',
+    backgroundColor: tone.bg,
+    contents: [
+      // Top row: emoji + symbol + action pill
+      {
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'sm',
+        contents: [
+          { type: 'text', text: tone.emoji, size: 'lg', flex: 0 },
+          { type: 'text', text: symbol, size: 'md', weight: 'bold', color: '#0F172A', flex: 4, gravity: 'center' },
+          {
+            type: 'box',
+            layout: 'vertical',
+            flex: 3,
+            backgroundColor: tone.color,
+            cornerRadius: '12px',
+            paddingAll: '4px',
+            contents: [{
+              type: 'text',
+              text: tone.label,
+              size: 'xxs',
+              weight: 'bold',
+              color: '#FFFFFF',
+              align: 'center',
+            }],
+          },
+        ],
+      },
+      // Weight bar with current/target labels
+      ...(curRaw != null || tgtRaw != null ? [weightBar(curRaw, tgtRaw, curText, tgtText, arrow, tone.color)] : []),
+      // Reason
+      ...(s.reason
+        ? [{ type: 'text', text: s.reason, wrap: true, size: 'xs', color: '#1E293B', margin: 'sm' }]
+        : []),
+    ],
+  };
+}
+
+// Two-stacked-bar weight indicator. Top bar shows "ปัจจุบัน" in gray, bottom
+// shows "เป้าหมาย" in the action's color — so the user sees both the current
+// state and the proposed change.
+function weightBar(curPct, tgtPct, curText, tgtText, arrow, accentColor) {
+  const safePct = (n) => n != null ? Math.max(2, Math.min(100, Math.round(Number(n)))) : 0;
+  const curWidth = safePct(curPct);
+  const tgtWidth = safePct(tgtPct);
+
+  const barTrack = (widthPct, fillColor) => ({
+    type: 'box',
+    layout: 'vertical',
+    backgroundColor: '#FFFFFF',
+    height: '6px',
+    cornerRadius: '3px',
+    contents: widthPct > 0
+      ? [{
+          type: 'box',
+          layout: 'vertical',
+          backgroundColor: fillColor,
+          width: `${widthPct}%`,
+          height: '6px',
+          cornerRadius: '3px',
+          contents: [{ type: 'filler' }],
+        }]
+      : [{ type: 'filler' }],
+  });
+
+  return {
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'xs',
+    margin: 'sm',
     contents: [
       {
         type: 'box',
         layout: 'horizontal',
         contents: [
-          { type: 'text', text: symbol, size: 'sm', weight: 'bold', color: '#0F172A', flex: 3 },
-          { type: 'text', text: tone.label, size: 'xs', weight: 'bold', color: tone.color, align: 'end', flex: 3 },
+          { type: 'text', text: `ปัจจุบัน ${curText}`, size: 'xxs', color: '#475569', flex: 4 },
+          { type: 'text', text: `${arrow} ${tgtText}`, size: 'xxs', weight: 'bold', color: accentColor, align: 'end', flex: 4 },
         ],
       },
-      {
-        type: 'box',
-        layout: 'horizontal',
-        contents: [
-          { type: 'text', text: `ปัจจุบัน ${cur}`, size: 'xxs', color: '#94A3B8', flex: 3 },
-          { type: 'text', text: `เป้าหมาย ${tgt}`, size: 'xxs', color: tone.color, align: 'end', flex: 3 },
-        ],
-      },
-      ...(s.reason
-        ? [{ type: 'text', text: s.reason, wrap: true, size: 'xs', color: '#1E293B' }]
-        : []),
+      barTrack(curWidth, '#94A3B8'),
+      barTrack(tgtWidth, accentColor),
     ],
   };
 }

@@ -410,43 +410,71 @@ export function portfolioRebalanceCard(rebalance) {
     });
   }
 
+  // Section A — existing holdings rebalance (Trim/Add/Hold/Watch per symbol).
   if (suggestions.length) {
     body.push({ type: 'separator', margin: 'md' });
-    body.push({ type: 'text', text: 'แนะนำต่อตัว', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    body.push({
+      type: 'box',
+      layout: 'horizontal',
+      margin: 'md',
+      contents: [
+        { type: 'text', text: 'ปรับน้ำหนักหุ้นที่ถือ', weight: 'bold', size: 'sm', color: '#0F172A', flex: 4 },
+        { type: 'text', text: `${suggestions.length} ตัว`, size: 'xxs', color: '#94A3B8', align: 'end', flex: 2 },
+      ],
+    });
     for (const s of suggestions) body.push(rebalanceRow(s));
   }
 
+  // Section B — NEW stock recommendations. Wrapped in a tinted panel so it
+  // stands out as a separate "buy candidates" zone, not part of the existing-
+  // holdings rebalance list above.
   if (diversifiers.length) {
-    body.push({ type: 'separator', margin: 'md' });
-    body.push({ type: 'text', text: 'หุ้นช่วยกระจายความเสี่ยง', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
-    for (const d of diversifiers) {
-      body.push({
-        type: 'box',
-        layout: 'vertical',
-        margin: 'sm',
-        contents: [
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: d.symbol || '?', size: 'sm', weight: 'bold', color: '#0F172A', flex: 2 },
-              { type: 'text', text: d.sector || '—', size: 'xs', color: '#475569', align: 'end', flex: 3 },
-            ],
-          },
-          ...(d.reason
-            ? [{ type: 'text', text: d.reason, wrap: true, size: 'xs', color: '#475569' }]
-            : []),
-        ],
-      });
-    }
+    body.push({
+      type: 'box',
+      layout: 'vertical',
+      margin: 'lg',
+      paddingAll: '12px',
+      cornerRadius: '10px',
+      backgroundColor: '#0EA5E912',
+      spacing: 'sm',
+      contents: [
+        {
+          type: 'box',
+          layout: 'horizontal',
+          contents: [
+            { type: 'text', text: '✨ หุ้นแนะนำเพิ่ม', weight: 'bold', size: 'sm', color: '#0369A1', flex: 4 },
+            { type: 'text', text: `${diversifiers.length} ตัว`, size: 'xxs', color: '#0369A1', align: 'end', flex: 2 },
+          ],
+        },
+        {
+          type: 'text',
+          text: 'ช่วยกระจายความเสี่ยงให้พอร์ตปัจจุบัน',
+          size: 'xxs',
+          color: '#475569',
+          wrap: true,
+        },
+        ...diversifiers.map(diversifierRow),
+      ],
+    });
   }
 
+  // Section C — risk notes, wrapped in a red-tinted panel.
   if (risks.length) {
-    body.push({ type: 'separator', margin: 'md' });
-    body.push({ type: 'text', text: 'ข้อควรระวัง', weight: 'bold', size: 'sm', color: '#DC2626', margin: 'md' });
-    for (const r of risks) {
-      body.push({ type: 'text', text: '• ' + r, wrap: true, size: 'xs', color: '#DC2626' });
-    }
+    body.push({
+      type: 'box',
+      layout: 'vertical',
+      margin: 'lg',
+      paddingAll: '12px',
+      cornerRadius: '10px',
+      backgroundColor: '#DC262614',
+      spacing: 'xs',
+      contents: [
+        { type: 'text', text: '⚠ ข้อควรระวัง', weight: 'bold', size: 'sm', color: '#DC2626' },
+        ...risks.map((r) => ({
+          type: 'text', text: '• ' + r, wrap: true, size: 'xs', color: '#991B1B',
+        })),
+      ],
+    });
   }
 
   return {
@@ -472,6 +500,50 @@ export function portfolioRebalanceCard(rebalance) {
         ],
       },
     },
+  };
+}
+
+// Self-contained card row for a "หุ้นแนะนำเพิ่ม" suggestion. Symbol + sector
+// pill on the top line, reason text below — wrapped in a white sub-panel so it
+// pops out of the cyan section background.
+function diversifierRow(d) {
+  return {
+    type: 'box',
+    layout: 'vertical',
+    paddingAll: '10px',
+    cornerRadius: '8px',
+    backgroundColor: '#FFFFFF',
+    spacing: 'xs',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: d.symbol || '?', size: 'md', weight: 'bold', color: '#0F172A', flex: 3 },
+          ...(d.sector
+            ? [{
+                type: 'box',
+                layout: 'vertical',
+                flex: 3,
+                backgroundColor: '#0EA5E914',
+                cornerRadius: '4px',
+                paddingAll: '4px',
+                contents: [{
+                  type: 'text',
+                  text: d.sector,
+                  size: 'xxs',
+                  color: '#0369A1',
+                  align: 'center',
+                  wrap: true,
+                }],
+              }]
+            : []),
+        ],
+      },
+      ...(d.reason
+        ? [{ type: 'text', text: d.reason, wrap: true, size: 'xs', color: '#1E293B' }]
+        : []),
+    ],
   };
 }
 

@@ -48,10 +48,12 @@ import { dailyAlertCard } from './flex/dailyAlert.js';
 import { dailyNewsCard } from './flex/news.js';
 import { oilLiffCard, stockLiffCard } from './flex/liffCards.js';
 import {
+  actionAckCard,
   holdingsStatusCard,
   portfolioAnalysisCard,
   portfolioCompareCard,
   portfolioConfirmCard,
+  portfolioHistoryCard,
   portfolioListCard,
   portfolioRebalanceCard,
   portfolioSummaryCard,
@@ -264,18 +266,28 @@ async function handlePostback(ev, env, userId) {
   if (action === 'subscribe') {
     await subscribeAlert(env, userId);
     await logEvent(env, userId, 'subscribe', { via: 'postback' });
-    return reply(env, ev.replyToken, textMsg('สมัครการแจ้งเตือนเรียบร้อย รับหุ้นเด่นทุกเช้า 09:00 (จ-ศ)'));
+    return reply(env, ev.replyToken, actionAckCard({
+      title: 'สมัครการแจ้งเตือนแล้ว',
+      subtitle: 'รับหุ้นเด่นทุกเช้า 09:00 (จันทร์–ศุกร์)',
+    }));
   }
   if (action === 'unsubscribe') {
     await unsubscribeAlert(env, userId);
     await logEvent(env, userId, 'unsubscribe', { via: 'postback' });
-    return reply(env, ev.replyToken, textMsg('ยกเลิกการแจ้งเตือนแล้ว'));
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยกเลิกการแจ้งเตือนแล้ว',
+    }));
   }
 
   if (action === 'confirm-portfolio') {
     const portfolioId = await confirmPendingPortfolio(env, userId);
     if (!portfolioId) {
-      return reply(env, ev.replyToken, textMsg('หมดเวลายืนยัน หรือไม่พบข้อมูลพอร์ตค้างไว้ ลองส่งภาพใหม่อีกครั้งนะครับ'));
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: 'หมดเวลายืนยัน',
+        subtitle: 'ไม่พบข้อมูลพอร์ตค้างไว้ — ลองส่งภาพใหม่อีกครั้งนะครับ',
+      }));
     }
     const saved = await getActivePortfolio(env, userId).catch(() => null);
     await logEvent(env, userId, 'portfolio_saved', {
@@ -285,11 +297,17 @@ async function handlePostback(ev, env, userId) {
       total_value: saved?.portfolio?.total_value ?? null,
       symbols: (saved?.holdings || []).map((h) => h.symbol),
     });
-    return reply(env, ev.replyToken, textMsg(
-      `บันทึก "${saved?.portfolio?.name || 'พอร์ต'}" แล้ว — ตั้งเป็นพอร์ตที่ใช้งานปัจจุบัน\n` +
-      'พิมพ์ "วิเคราะห์พอร์ต" หรือ "ปรับพอร์ต" เพื่อต่อ\n' +
-      'พิมพ์ "เปลี่ยนชื่อ <ชื่อใหม่>" เพื่อตั้งชื่อให้ตรงใจ',
-    ));
+    return reply(env, ev.replyToken, actionAckCard({
+      title: `บันทึก "${saved?.portfolio?.name || 'พอร์ต'}" แล้ว`,
+      subtitle: 'ตั้งเป็นพอร์ตที่ใช้งานปัจจุบันแล้ว',
+      lines: [
+        { label: 'หุ้น', value: String((saved?.holdings || []).length) + ' ตัว' },
+        ...(saved?.portfolio?.total_value != null
+          ? [{ label: 'มูลค่ารวม', value: Number(saved.portfolio.total_value).toLocaleString('en-US') }]
+          : []),
+        { text: 'พิมพ์ "วิเคราะห์พอร์ต" หรือ "ปรับพอร์ต" เพื่อต่อ', color: '#475569' },
+      ],
+    }));
   }
 
   if (action === 'update-portfolio') {
@@ -297,7 +315,11 @@ async function handlePostback(ev, env, userId) {
     if (!Number.isFinite(id)) return reply(env, ev.replyToken, textMsg('คำสั่งไม่ถูกต้อง'));
     const result = await updatePortfolioFromPending(env, userId, id);
     if (!result) {
-      return reply(env, ev.replyToken, textMsg('ไม่พบพอร์ตหรือหมดเวลายืนยัน ส่งภาพพอร์ตใหม่อีกครั้งนะครับ'));
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: 'อัพเดตไม่สำเร็จ',
+        subtitle: 'ไม่พบพอร์ตหรือหมดเวลายืนยัน — ส่งภาพพอร์ตใหม่อีกครั้งนะครับ',
+      }));
     }
     const updated = await getPortfolioWithHoldings(env, userId, id);
     await logEvent(env, userId, 'portfolio_updated', {
@@ -307,37 +329,69 @@ async function handlePostback(ev, env, userId) {
       total_value: updated?.portfolio?.total_value ?? null,
       symbols: (updated?.holdings || []).map((h) => h.symbol),
     });
-    return reply(env, ev.replyToken, textMsg(
-      `อัพเดต "${updated?.portfolio?.name || 'พอร์ต'}" เรียบร้อย — เก็บ snapshot เดิมไว้ในประวัติแล้ว\n` +
-      'พิมพ์ "ประวัติพอร์ต" เพื่อดูการเปลี่ยนแปลง',
-    ));
+    return reply(env, ev.replyToken, actionAckCard({
+      title: `อัพเดต "${updated?.portfolio?.name || 'พอร์ต'}" แล้ว`,
+      subtitle: 'เก็บ snapshot เดิมไว้ในประวัติเรียบร้อย',
+      lines: [
+        { label: 'หุ้น', value: String((updated?.holdings || []).length) + ' ตัว' },
+        ...(updated?.portfolio?.total_value != null
+          ? [{ label: 'มูลค่ารวมล่าสุด', value: Number(updated.portfolio.total_value).toLocaleString('en-US') }]
+          : []),
+      ],
+      cta: { label: 'ดูประวัติพอร์ต', data: 'action=show-portfolio-history' },
+    }));
   }
 
   if (action === 'retry-portfolio') {
     await deletePendingPortfolio(env, userId);
     await logEvent(env, userId, 'portfolio_retry', null);
-    return reply(env, ev.replyToken, textMsg('ยกเลิกแล้ว ส่งภาพพอร์ตอีกครั้งได้เลยครับ'));
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยกเลิกแล้ว',
+      subtitle: 'ส่งภาพพอร์ตอีกครั้งได้เลย',
+    }));
   }
 
   if (action === 'select-portfolio') {
     const id = Number(data.get('id'));
     if (!Number.isFinite(id)) return reply(env, ev.replyToken, textMsg('คำสั่งไม่ถูกต้อง'));
     const ok = await setActivePortfolio(env, userId, id);
-    if (!ok) return reply(env, ev.replyToken, textMsg('ไม่พบพอร์ตนั้น อาจถูกลบไปแล้ว'));
+    if (!ok) {
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: 'ไม่พบพอร์ตนั้น',
+        subtitle: 'อาจถูกลบไปแล้ว',
+      }));
+    }
     await logEvent(env, userId, 'portfolio_switched', { portfolio_id: id });
     const active = await getActivePortfolio(env, userId);
-    return reply(env, ev.replyToken, textMsg(
-      `เลือก "${active?.portfolio?.name || 'พอร์ต'}" เป็นพอร์ตที่ใช้งานแล้ว`,
-    ));
+    return reply(env, ev.replyToken, actionAckCard({
+      title: `เลือก "${active?.portfolio?.name || 'พอร์ต'}" เป็นพอร์ตที่ใช้งานแล้ว`,
+      lines: [
+        { label: 'หุ้น', value: String((active?.holdings || []).length) + ' ตัว' },
+      ],
+    }));
   }
 
   if (action === 'delete-portfolio') {
     const id = Number(data.get('id'));
     if (!Number.isFinite(id)) return reply(env, ev.replyToken, textMsg('คำสั่งไม่ถูกต้อง'));
     const ok = await deletePortfolioById(env, userId, id);
-    if (!ok) return reply(env, ev.replyToken, textMsg('ไม่พบพอร์ตนั้น'));
+    if (!ok) {
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: 'ไม่พบพอร์ตนั้น',
+      }));
+    }
     await logEvent(env, userId, 'portfolio_deleted', { portfolio_id: id });
-    return reply(env, ev.replyToken, textMsg('ลบพอร์ตแล้ว'));
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ลบพอร์ตแล้ว',
+    }));
+  }
+
+  if (action === 'show-portfolio-history') {
+    return showPortfolioHistory(ev, env, userId);
   }
 
   if (action === 'list-transactions') {
@@ -498,7 +552,11 @@ async function handleText(ev, env, userId, text) {
     await clearHistory(env, userId);
     await deleteSession(env, userId);
     await logEvent(env, userId, 'reset_chat', null);
-    return reply(env, ev.replyToken, textMsg('ล้างประวัติแชทแล้ว เริ่มใหม่ได้เลย'));
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ล้างประวัติแชทแล้ว',
+      subtitle: 'เริ่มใหม่ได้เลย',
+    }));
   }
   if (cmd === 'stock') {
     return reply(env, ev.replyToken, stockLiffCard(env));
@@ -510,23 +568,35 @@ async function handleText(ev, env, userId, text) {
     await upsertUser(env, { userId });
     await subscribeAlert(env, userId);
     await logEvent(env, userId, 'subscribe', { via: 'text' });
-    return reply(env, ev.replyToken, textMsg('สมัครการแจ้งเตือนเรียบร้อย รับหุ้นเด่นทุกเช้า 09:00 (จ-ศ)'));
+    return reply(env, ev.replyToken, actionAckCard({
+      title: 'สมัครการแจ้งเตือนแล้ว',
+      subtitle: 'รับหุ้นเด่นทุกเช้า 09:00 (จันทร์–ศุกร์)',
+    }));
   }
   if (cmd === 'unsubscribe') {
     await unsubscribeAlert(env, userId);
     await logEvent(env, userId, 'unsubscribe', { via: 'text' });
-    return reply(env, ev.replyToken, textMsg('ยกเลิกการแจ้งเตือนแล้ว'));
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยกเลิกการแจ้งเตือนแล้ว',
+    }));
   }
   if (cmd === 'subscribe-news') {
     await upsertUser(env, { userId });
     await subscribeNews(env, userId);
     await logEvent(env, userId, 'subscribe_news', { via: 'text' });
-    return reply(env, ev.replyToken, textMsg('สมัครข่าวประจำวันเรียบร้อย รับข่าวสำหรับพอร์ตของคุณทุกเช้า 08:00 (จ-ศ)'));
+    return reply(env, ev.replyToken, actionAckCard({
+      title: 'สมัครข่าวประจำวันแล้ว',
+      subtitle: 'รับข่าวพอร์ตของคุณทุกเช้า 08:00 (จันทร์–ศุกร์)',
+    }));
   }
   if (cmd === 'unsubscribe-news') {
     await unsubscribeNews(env, userId);
     await logEvent(env, userId, 'unsubscribe_news', { via: 'text' });
-    return reply(env, ev.replyToken, textMsg('ยกเลิกข่าวประจำวันแล้ว'));
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยกเลิกข่าวประจำวันแล้ว',
+    }));
   }
   if (cmd === 'portfolio') {
     return showPortfolio(ev, env, userId);
@@ -562,26 +632,48 @@ async function handleText(ev, env, userId, text) {
   if (cmd === 'rename-portfolio') {
     const newName = match.arg;
     if (!newName) {
-      return reply(env, ev.replyToken, textMsg('พิมพ์ "เปลี่ยนชื่อ <ชื่อใหม่>" ตามด้วยชื่อที่ต้องการ'));
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: 'พิมพ์ชื่อใหม่ด้วย',
+        subtitle: 'รูปแบบ: "เปลี่ยนชื่อ <ชื่อใหม่>"',
+      }));
     }
     const active = await getActivePortfolio(env, userId);
     if (!active) {
-      return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่ใช้งาน'));
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'info',
+        title: 'ยังไม่มีพอร์ตที่ใช้งาน',
+      }));
     }
     const oldName = active.portfolio.name;
     const ok = await renamePortfolio(env, userId, active.portfolio.id, newName);
-    if (!ok) return reply(env, ev.replyToken, textMsg('ไม่สามารถเปลี่ยนชื่อได้'));
+    if (!ok) {
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: 'ไม่สามารถเปลี่ยนชื่อได้',
+      }));
+    }
+    const trimmed = newName.trim().slice(0, 60);
     await logEvent(env, userId, 'portfolio_renamed', {
       portfolio_id: active.portfolio.id,
       from: oldName,
-      to: newName.trim().slice(0, 60),
+      to: trimmed,
     });
-    return reply(env, ev.replyToken, textMsg(`เปลี่ยนชื่อจาก "${oldName}" เป็น "${newName.trim().slice(0, 60)}" แล้ว`));
+    return reply(env, ev.replyToken, actionAckCard({
+      title: 'เปลี่ยนชื่อพอร์ตแล้ว',
+      lines: [
+        { label: 'จาก', value: `"${oldName}"`, color: '#94A3B8' },
+        { label: 'เป็น', value: `"${trimmed}"` },
+      ],
+    }));
   }
   if (cmd === 'clear-portfolio') {
     await clearPortfolios(env, userId);
     await logEvent(env, userId, 'portfolio_cleared', null);
-    return reply(env, ev.replyToken, textMsg('ลบข้อมูลพอร์ตทั้งหมดแล้ว'));
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ลบข้อมูลพอร์ตทั้งหมดแล้ว',
+    }));
   }
 
   await showLoading(env, userId, 20);
@@ -824,22 +916,24 @@ async function showHoldingsStatus(ev, env, userId) {
 async function showPortfolioHistory(ev, env, userId) {
   const active = await getActivePortfolio(env, userId);
   if (!active) {
-    return reply(env, ev.replyToken, textMsg('ยังไม่มีพอร์ตที่ใช้งาน — ส่งภาพพอร์ตเพื่อเริ่มต้น'));
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยังไม่มีพอร์ตที่ใช้งาน',
+      subtitle: 'ส่งภาพพอร์ตจากแอปโบรกเกอร์เพื่อเริ่มต้น',
+    }));
   }
   const snapshots = await getPortfolioSnapshots(env, userId, active.portfolio.id, 20);
   if (!snapshots.length) {
-    return reply(env, ev.replyToken, textMsg(
-      `"${active.portfolio.name}" ยังไม่มีประวัติการอัพเดต\nครั้งต่อไปที่ส่งภาพ ให้กด "อัพเดต" เพื่อเก็บ snapshot ไว้ดูย้อนหลังได้`,
-    ));
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: `"${active.portfolio.name}" ยังไม่มีประวัติ`,
+      subtitle: 'ครั้งต่อไปที่ส่งภาพ ให้กด "อัพเดต" เพื่อเก็บ snapshot ไว้ดูย้อนหลังได้',
+    }));
   }
-
-  const lines = [`ประวัติของ "${active.portfolio.name}"`, ''];
-  // Current state at the top.
-  lines.push(`• ${formatTakenAt(active.portfolio.taken_at)} (ปัจจุบัน) — ${formatMoney(active.portfolio.total_value)}`);
-  for (const s of snapshots) {
-    lines.push(`• ${formatTakenAt(s.taken_at)} — ${formatMoney(s.total_value)} (${(s.holdings || []).length} ตัว)`);
-  }
-  return reply(env, ev.replyToken, textMsg(lines.join('\n')));
+  return reply(env, ev.replyToken, portfolioHistoryCard({
+    portfolio: active.portfolio,
+    snapshots,
+  }));
 }
 
 function formatTakenAt(unix) {

@@ -200,7 +200,12 @@ test message) are tracked as a follow-up.
 | `ความมั่งคั่ง` / `net worth` / `wealth` | **AIWealthOS Phase 1** — collapse every portfolio (Thai + global + cash) into a single THB net-worth number, broken down by asset class with an FX-adjusted view. Forces a backfill of asset_class on the user's holdings on first call. |
 | `ติด <SYM> <class>` / `tag <SYM> <class>` | Override the inferred asset class for a symbol across every portfolio. Valid classes: `thai_equity`, `global_etf`, `thai_fund`, `hk_equity`, `cash`, `crypto`, `other`. |
 | `ตั้งเป้าหมาย` / `set goal` | **AIWealthOS Phase 1.2** — start the 3-step goal wizard (target amount → horizon → allocation). Back-solves the monthly DCA via PMT formula and shows a confirmation card. Saves as the user's single active goal. |
-| `เป้าหมาย` / `goal` | Show the active goal: progress vs target, glidepath status (🟢🟡🔴), DCA adherence %, allocation targets. |
+| `เป้าหมาย` / `goal` | Show the active goal: progress vs target, glidepath status (🟢🟡🔴), DCA adherence %, allocation targets. Goal card carries a "✏️ ปรับเป้าหมาย" button → opens the edit menu. |
+| `ปรับเป้าหมาย` / `edit goal` | Edit menu card with 4 fields: ยอด / ปี / ผลตอบแทน / สัดส่วน. Tap a button → one-step wizard. Amount/year/return changes auto-recompute the monthly DCA via the PMT formula. |
+| `ปรับเป้า <amount>` / `edit target <amount>` | Text shortcut — patch target amount in place. |
+| `ปรับปี <year>` / `edit year <year>` | Text shortcut — patch target year (accepts "15" as years from now or "2045" as absolute). |
+| `ปรับผลตอบแทน <pct>` / `edit return <pct>` | Text shortcut — patch expected annual return %. |
+| `ปรับสัดส่วน <a> <b> <c>` / `edit allocation <a> <b> <c>` | Text shortcut — patch allocation (thai_equity / global_etf / cash). |
 | `เติม <amount> [<class>]` / `dca <amount>` | Log a DCA contribution. `เติม 30000` splits per goal allocation; `เติม 30000 global_etf` allocates to a single class. Accepts `20M` / `5K` shortcuts. |
 | `ลบเป้าหมาย` / `clear goal` | Deactivate the current goal so a fresh one can be set. Past contributions are preserved. |
 | `ปันผล <SYM> <amount>` / `dividend <SYM> <amount>` | **AIWealthOS Phase 3** — log a received dividend. Two input modes: `ปันผล PTT 2150` (net amount) or `ปันผล PTT 2.15 1000` (per-share × quantity). Bot replies with a Flex confirm card carrying reinvest CTAs that point at the existing `เติม` flow (DCA-aware split) or a per-symbol re-buy. |

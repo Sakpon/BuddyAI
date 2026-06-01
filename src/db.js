@@ -1042,6 +1042,58 @@ export async function clearActiveGoal(env, userId) {
   return (meta?.changes || 0) > 0;
 }
 
+// Partial in-place edit of the active goal. Accepts any subset of:
+//   { targetAmountThb, targetYear, expectedReturnPct, allocationTargets,
+//     monthlyContributionThb }
+// Caller is responsible for re-running the PMT back-solver when any of
+// amount/year/return change — keeps this helper agnostic to the math.
+//
+// Returns { ok, changed, goal } where `goal` is the freshly-fetched
+// active goal (so the caller can render the updated card without a second
+// query).
+export async function updateGoalFields(env, userId, patch) {
+  const goal = await getActiveGoal(env, userId);
+  if (!goal) return { ok: false, error: 'no_active_goal' };
+
+  const fields = [];
+  const values = [];
+  if (patch.targetAmountThb != null && Number.isFinite(Number(patch.targetAmountThb))) {
+    fields.push('target_amount_thb = ?');
+    values.push(Number(patch.targetAmountThb));
+  }
+  if (patch.targetYear != null && Number.isInteger(Number(patch.targetYear))) {
+    fields.push('target_year = ?');
+    values.push(Number(patch.targetYear));
+  }
+  if (patch.expectedReturnPct != null && Number.isFinite(Number(patch.expectedReturnPct))) {
+    fields.push('expected_return_pct = ?');
+    values.push(Number(patch.expectedReturnPct));
+  }
+  if (patch.monthlyContributionThb != null && Number.isFinite(Number(patch.monthlyContributionThb))) {
+    fields.push('monthly_contribution_thb = ?');
+    values.push(Number(patch.monthlyContributionThb));
+  }
+  if (patch.allocationTargets && typeof patch.allocationTargets === 'object') {
+    fields.push('allocation_targets_json = ?');
+    values.push(JSON.stringify(patch.allocationTargets));
+  }
+
+  if (!fields.length) return { ok: true, changed: false, goal };
+
+  fields.push('updated_at = unixepoch()');
+  values.push(goal.id, userId);
+
+  const { meta } = await env.DB.prepare(
+    `UPDATE goals SET ${fields.join(', ')}
+      WHERE id = ? AND user_id = ? AND is_active = 1`,
+  )
+    .bind(...values)
+    .run();
+
+  const updated = await getActiveGoal(env, userId);
+  return { ok: true, changed: (meta?.changes || 0) > 0, goal: updated };
+}
+
 export async function recordContribution(env, userId, { goalId, assetClass, amountThb, notes }) {
   if (!Number.isFinite(amountThb) || amountThb <= 0) return { ok: false, error: 'invalid_input' };
   if (!assetClass) return { ok: false, error: 'invalid_input' };

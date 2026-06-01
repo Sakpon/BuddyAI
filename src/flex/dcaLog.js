@@ -311,6 +311,110 @@ export function dcaLogResultCard({ amount, breakdown, totalThisMonth, ym, kind }
   };
 }
 
+// Sanity-check card shown BEFORE the allocation step when the entered amount
+// looks risky: (a) it's ≥30% of the tracked portfolio (likely a typo, e.g.
+// 300,000 instead of 30,000), or (b) a DCA was already logged this calendar
+// month (possible duplicate entry). The user can confirm, cancel, or just
+// re-type / re-upload a corrected amount.
+//
+// `reasons` is an array of:
+//   { kind: 'large_pct', pct, netWorthThb }
+//   { kind: 'duplicate', existingThisMonthThb }
+export function dcaWarningCard({ amount, ym, reasons = [] }) {
+  const amt = Number(amount) || 0;
+
+  const reasonBoxes = reasons.map((r) => {
+    let line;
+    if (r.kind === 'large_pct') {
+      line = `ยอดนี้คิดเป็น ~${Math.round(Number(r.pct) || 0)}% ของพอร์ตคุณ (฿${fmtThb(r.netWorthThb)}) — ใหญ่ผิดปกติ ลองเช็กว่าพิมพ์เกินหลักไหม เช่น ฿300,000 แทน ฿30,000`;
+    } else if (r.kind === 'duplicate') {
+      line = `เดือน ${ym} คุณบันทึก DCA ไปแล้วรวม ฿${fmtThb(r.existingThisMonthThb)} — รายการนี้อาจซ้ำ`;
+    } else {
+      line = 'ตรวจสอบความถูกต้องอีกครั้งก่อนบันทึก';
+    }
+    return {
+      type: 'box',
+      layout: 'horizontal',
+      spacing: 'sm',
+      margin: 'sm',
+      contents: [
+        { type: 'text', text: '•', size: 'sm', color: '#D97706', flex: 0 },
+        { type: 'text', text: line, size: 'xs', color: '#1E293B', wrap: true, flex: 9 },
+      ],
+    };
+  });
+
+  return {
+    type: 'flex',
+    altText: `ตรวจสอบก่อนบันทึก DCA ฿${fmtThb(amt)}`,
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: heroBand('⚠ ตรวจสอบก่อนบันทึก', `DCA ที่จะบันทึก ฿${fmtThb(amt)} · เดือน ${ym}`),
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'box',
+            layout: 'vertical',
+            backgroundColor: '#D9770614',
+            cornerRadius: '10px',
+            paddingAll: '14px',
+            spacing: 'xs',
+            contents: [
+              { type: 'text', text: 'ยอดที่จะบันทึก', size: 'xs', color: '#475569' },
+              { type: 'text', text: `฿${fmtThb(amt)}`, size: 'xxl', weight: 'bold', color: '#B45309' },
+            ],
+          },
+          { type: 'separator', margin: 'md' },
+          { type: 'text', text: 'สิ่งที่ควรเช็ก', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' },
+          ...reasonBoxes,
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#D97706',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: '✓ ยืนยัน ยอดถูกต้อง บันทึกต่อ',
+              data: 'action=dca-log-confirm',
+              displayText: 'ยืนยันยอด DCA',
+            },
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: 'ยกเลิก',
+              data: 'action=dca-log-cancel',
+              displayText: 'ยกเลิกการบันทึก',
+            },
+          },
+          {
+            type: 'text',
+            text: 'แก้ไขได้ทันที: พิมพ์จำนวนใหม่ เช่น "30000" หรือส่งภาพ slip ใหม่',
+            size: 'xxs',
+            color: '#94A3B8',
+            wrap: true,
+            align: 'center',
+          },
+        ],
+      },
+    },
+  };
+}
+
 // Helper card for "couldn't parse amount" / "wizard expired" / etc. so the
 // flow stays Flex-only as the user requested. Identical look to other
 // info-style nudges; lives here to keep the DCA flow self-contained.

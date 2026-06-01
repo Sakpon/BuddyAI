@@ -127,6 +127,7 @@ import {
   amountAskCard,
   dcaLogInfoCard,
   dcaLogResultCard,
+  dcaWarningCard,
 } from './flex/dcaLog.js';
 import {
   DRIFT_THRESHOLD_PP,
@@ -537,6 +538,10 @@ async function handlePostback(ev, env, userId) {
     const v = Number(data.get('v'));
     return advanceDcaLogToAllocation(ev, env, userId, v);
   }
+  // Warning step — user acknowledged a large-amount / duplicate-month warning
+  if (action === 'dca-log-confirm') {
+    return confirmDcaWarning(ev, env, userId);
+  }
   // Step 2 — allocation choice from allocationAskCard
   if (action === 'dca-log-allocation') {
     const kind = data.get('kind');                // 'auto' | 'single'
@@ -633,10 +638,11 @@ async function handleImage(ev, env, userId, messageId) {
   await upsertUser(env, { userId });
 
   // DCA-log wizard interception — if the user is mid-wizard on the amount
-  // step, treat the image as a slip / fund-purchase receipt instead of
-  // falling through to the portfolio/transactions vision pipeline.
+  // step (or the warn step, where they may re-upload a corrected slip), treat
+  // the image as a slip / fund-purchase receipt instead of falling through to
+  // the portfolio/transactions vision pipeline.
   const dcaLogState = await getDcaLogWizardState(env, userId);
-  if (dcaLogState && dcaLogState.step === 'amount') {
+  if (dcaLogState && (dcaLogState.step === 'amount' || dcaLogState.step === 'warn')) {
     return handleDcaLogImage(ev, env, userId, messageId, dcaLogState);
   }
 
@@ -747,10 +753,11 @@ async function handleText(ev, env, userId, text) {
     // fall through to the matched command
   }
 
-  // DCA-log wizard interception (amount step only). Allocation step is
-  // postback-driven, so free-form text there falls through to commands.
+  // DCA-log wizard interception. On the amount step (and the warn step, where
+  // the user may re-type a corrected number) free-form text is the answer.
+  // The allocation step is postback-driven, so text there falls through.
   const dcaLogState = await getDcaLogWizardState(env, userId);
-  if (dcaLogState && dcaLogState.step === 'amount' && !cmd) {
+  if (dcaLogState && (dcaLogState.step === 'amount' || dcaLogState.step === 'warn') && !cmd) {
     return handleDcaLogAmountText(ev, env, userId, text, dcaLogState);
   }
   if (dcaLogState && cmd) {
@@ -2669,6 +2676,67 @@ async function startDcaLogWizard(ev, env, userId) {
   }));
 }
 
+// A DCA ≥ this share of the tracked portfolio (net worth) is flagged as
+// "unusually large" — almost always a typo (฿300,000 instead of ฿30,000).
+const DCA_LARGE_PORTFOLIO_PCT = 0.30;
+
+// Build the list of sanity-check warnings for a proposed DCA amount. Used by
+// BOTH the manual-input and screenshot-upload paths so the prevention logic
+// is identical regardless of how the amount arrived.
+async function evaluateDcaWarnings(env, userId, { amount, goalId }) {
+  const reasons = [];
+  const amt = Number(amount) || 0;
+
+  // (1) Large-relative-to-portfolio check. Skip when no portfolio is tracked
+  // (net worth 0) — there's nothing meaningful to compare against.
+  const netWorth = await getNetWorth(env, userId).catch(() => ({ total_thb: 0 }));
+  const nw = Number(netWorth?.total_thb) || 0;
+  if (nw > 0 && amt >= nw * DCA_LARGE_PORTFOLIO_PCT) {
+    reasons.push({ kind: 'large_pct', pct: (amt / nw) * 100, netWorthThb: nw });
+  }
+
+  // (2) Duplicate-this-month check. If any DCA is already logged for the
+  // current Bangkok calendar month, warn that this entry may be a repeat.
+  const existingThisMonth = await getContributionsThisMonth(env, userId, goalId, new Date()).catch(() => 0);
+  if (Number(existingThisMonth) > 0) {
+    reasons.push({ kind: 'duplicate', existingThisMonthThb: Number(existingThisMonth) });
+  }
+
+  return reasons;
+}
+
+// Shared continuation once we have a validated amount. Decides whether to
+// interrupt with the warning card or go straight to the allocation step.
+// `send` is reply()-bound for postback/text events and push()-bound for image
+// events (which have no usable reply token at this point).
+async function proceedAfterDcaAmount(env, userId, state, amount, send) {
+  const amt = Number(amount);
+  const reasons = await evaluateDcaWarnings(env, userId, { amount: amt, goalId: state.data.goalId });
+
+  if (reasons.length) {
+    state.step = 'warn';
+    state.data.amount = amt;
+    state.data.warnings = reasons;
+    await saveDcaLogWizardState(env, userId, state);
+    await logEvent(env, userId, 'dca_log_warning_shown', {
+      goal_id: state.data.goalId,
+      amount_thb: Math.round(amt),
+      reasons: reasons.map((r) => r.kind),
+    });
+    return send(dcaWarningCard({ amount: amt, ym: state.data.ym, reasons }));
+  }
+
+  state.step = 'allocation';
+  state.data.amount = amt;
+  delete state.data.warnings;
+  await saveDcaLogWizardState(env, userId, state);
+  return send(allocationAskCard({
+    amount: amt,
+    ym: state.data.ym,
+    allocation: state.data.allocation,
+  }));
+}
+
 async function advanceDcaLogToAllocation(ev, env, userId, amount) {
   const state = await getDcaLogWizardState(env, userId);
   if (!state) {
@@ -2686,11 +2754,29 @@ async function advanceDcaLogToAllocation(ev, env, userId, amount) {
       subtitle: 'พิมพ์ตัวเลขใหม่ เช่น "30000" / "30K" หรือส่งภาพ slip',
     }));
   }
+  return proceedAfterDcaAmount(env, userId, state, amt, (msg) => reply(env, ev.replyToken, msg));
+}
+
+// Warning-card "✓ ยืนยัน ยอดถูกต้อง" — user has acknowledged the duplicate /
+// large-amount warning and wants to continue to the allocation step.
+async function confirmDcaWarning(ev, env, userId) {
+  const state = await getDcaLogWizardState(env, userId);
+  if (!state || state.step !== 'warn' || !state.data?.amount) {
+    return reply(env, ev.replyToken, dcaLogInfoCard({
+      tone: 'warning',
+      title: 'หมดเวลายืนยัน',
+      subtitle: 'แตะ "บันทึก DCA เดือนนี้" ใหม่อีกครั้ง',
+    }));
+  }
   state.step = 'allocation';
-  state.data.amount = amt;
+  delete state.data.warnings;
   await saveDcaLogWizardState(env, userId, state);
+  await logEvent(env, userId, 'dca_log_warning_confirmed', {
+    goal_id: state.data.goalId,
+    amount_thb: Math.round(Number(state.data.amount)),
+  });
   return reply(env, ev.replyToken, allocationAskCard({
-    amount: amt,
+    amount: state.data.amount,
     ym: state.data.ym,
     allocation: state.data.allocation,
   }));
@@ -2819,16 +2905,10 @@ async function handleDcaLogImage(ev, env, userId, messageId, state) {
     amount_thb: amt,
     description: extracted.description || null,
   });
-  // Advance with the parsed amount. Use push() since this came from an image
-  // event (no replyToken bound to it through showLoading already).
-  state.step = 'allocation';
-  state.data.amount = amt;
-  await saveDcaLogWizardState(env, userId, state);
-  return push(env, userId, allocationAskCard({
-    amount: amt,
-    ym: state.data.ym,
-    allocation: state.data.allocation,
-  }));
+  // Advance with the parsed amount through the shared continuation so the
+  // same large-amount / duplicate-month warnings apply to slip uploads.
+  // Use push() since this came from an image event (no usable reply token).
+  return proceedAfterDcaAmount(env, userId, state, amt, (msg) => push(env, userId, msg));
 }
 
 // AIWealthOS Phase 2 — daily nudge cron.

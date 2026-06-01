@@ -94,7 +94,7 @@ import {
   verifySignature,
 } from './line.js';
 import { deleteSession, setSession } from './session.js';
-import { extractFromImage, fetchLineImage } from './vision.js';
+import { extractDcaReceipt, extractFromImage, fetchLineImage } from './vision.js';
 import { fetchYahooNewsForHoldings } from './news.js';
 import { fetchUnifiedQuotesForHoldings } from './marketdata.js';
 import { fetchAndStoreFxRates } from './fx.js';
@@ -122,6 +122,12 @@ import {
   validateTargetYear,
 } from './goals.js';
 import { dcaOverridesCard, goalCard, goalConfirmCard, goalEditMenuCard } from './flex/goal.js';
+import {
+  allocationAskCard,
+  amountAskCard,
+  dcaLogInfoCard,
+  dcaLogResultCard,
+} from './flex/dcaLog.js';
 import {
   DRIFT_THRESHOLD_PP,
   bangkokWeekRange,
@@ -520,7 +526,31 @@ async function handlePostback(ev, env, userId) {
     }));
   }
   if (action === 'goal-log-monthly') {
-    return logGoalMonthlyContribution(ev, env, userId);
+    // Kicks off the multi-step DCA log wizard (amount → allocation).
+    // The old "one-tap fire-and-forget" path is preserved as a fallback
+    // inside startDcaLogWizard when the goal has no allocation_targets.
+    return startDcaLogWizard(ev, env, userId);
+  }
+
+  // Step 1 of the wizard — quick-tap amount chip from amountAskCard
+  if (action === 'dca-log-amount') {
+    const v = Number(data.get('v'));
+    return advanceDcaLogToAllocation(ev, env, userId, v);
+  }
+  // Step 2 — allocation choice from allocationAskCard
+  if (action === 'dca-log-allocation') {
+    const kind = data.get('kind');                // 'auto' | 'single'
+    const cls = data.get('class') || null;        // when kind === 'single'
+    return finalizeDcaLog(ev, env, userId, { kind, singleClass: cls });
+  }
+  if (action === 'dca-log-cancel') {
+    await deleteDcaLogWizardState(env, userId);
+    await logEvent(env, userId, 'dca_log_wizard_cancelled', null);
+    return reply(env, ev.replyToken, dcaLogInfoCard({
+      tone: 'info',
+      title: 'ยกเลิกการบันทึก DCA',
+      subtitle: 'พิมพ์ "เป้าหมาย" เพื่อกลับไปที่การ์ดเป้าหมาย',
+    }));
   }
 
   if (action === 'goal-edit') {
@@ -601,6 +631,14 @@ async function handlePostback(ev, env, userId) {
 async function handleImage(ev, env, userId, messageId) {
   await showLoading(env, userId, 30);
   await upsertUser(env, { userId });
+
+  // DCA-log wizard interception — if the user is mid-wizard on the amount
+  // step, treat the image as a slip / fund-purchase receipt instead of
+  // falling through to the portfolio/transactions vision pipeline.
+  const dcaLogState = await getDcaLogWizardState(env, userId);
+  if (dcaLogState && dcaLogState.step === 'amount') {
+    return handleDcaLogImage(ev, env, userId, messageId, dcaLogState);
+  }
 
   let extracted;
   try {
@@ -706,6 +744,17 @@ async function handleText(ev, env, userId, text) {
   }
   if (wizardState && cmd) {
     await deleteGoalWizardState(env, userId);
+    // fall through to the matched command
+  }
+
+  // DCA-log wizard interception (amount step only). Allocation step is
+  // postback-driven, so free-form text there falls through to commands.
+  const dcaLogState = await getDcaLogWizardState(env, userId);
+  if (dcaLogState && dcaLogState.step === 'amount' && !cmd) {
+    return handleDcaLogAmountText(ev, env, userId, text, dcaLogState);
+  }
+  if (dcaLogState && cmd) {
+    await deleteDcaLogWizardState(env, userId);
     // fall through to the matched command
   }
 
@@ -2546,24 +2595,234 @@ async function recordContributionHandler(ev, env, userId, arg) {
   }));
 }
 
-async function logGoalMonthlyContribution(ev, env, userId) {
+// ────────────────────────────────────────────────────────────────────────
+// DCA log wizard — replaces the single-tap "บันทึก DCA เดือนนี้" handler
+// with a 2-step Flex flow:
+//
+//   Step 1 (amount)     — quick-pick chip, free-form text number, or
+//                         a screenshot of a slip / fund-purchase receipt
+//   Step 2 (allocation) — auto-split per plan | single class
+//
+// Wizard state lives in KV at dca-log-wizard:<userId>, shape:
+//   { step: 'amount' | 'allocation',
+//     data: { amount?: number, ym, plannedAmount, allocation } }
+// ────────────────────────────────────────────────────────────────────────
+
+const DCA_LOG_WIZARD_PREFIX = 'dca-log-wizard:';
+const DCA_LOG_WIZARD_TTL = 60 * 30;
+
+async function getDcaLogWizardState(env, userId) {
+  const raw = await env.SESSION_KV.get(DCA_LOG_WIZARD_PREFIX + userId);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+async function saveDcaLogWizardState(env, userId, state) {
+  await env.SESSION_KV.put(
+    DCA_LOG_WIZARD_PREFIX + userId,
+    JSON.stringify(state),
+    { expirationTtl: DCA_LOG_WIZARD_TTL },
+  );
+}
+async function deleteDcaLogWizardState(env, userId) {
+  await env.SESSION_KV.delete(DCA_LOG_WIZARD_PREFIX + userId);
+}
+
+async function startDcaLogWizard(ev, env, userId) {
   const goal = await getActiveGoal(env, userId);
   if (!goal) {
-    return reply(env, ev.replyToken, actionAckCard({
+    return reply(env, ev.replyToken, dcaLogInfoCard({
       tone: 'warning',
       title: 'ยังไม่มีเป้าหมาย',
-      subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อตั้ง',
+      subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อตั้งก่อน',
     }));
   }
-  // Check for a per-month override for THIS calendar month (Bangkok). If set,
-  // suggest that amount; otherwise fall back to the standing monthly DCA.
   const ym = bangkokYearMonth(new Date());
   const override = await getDcaOverride(env, userId, goal.id, ym);
-  const monthly = override?.amount_thb ?? goal.monthlyContributionThb;
-  return recordContributionHandler(ev, env, userId, {
-    amountRaw: String(Math.round(monthly)),
-    assetClass: null,
+  const plannedAmount = override?.amount_thb ?? Number(goal.monthlyContributionThb);
+
+  await saveDcaLogWizardState(env, userId, {
+    step: 'amount',
+    data: {
+      ym,
+      plannedAmount,
+      isOverride: !!override,
+      allocation: goal.allocationTargets || {},
+      goalId: goal.id,
+    },
   });
+  await logEvent(env, userId, 'dca_log_wizard_started', {
+    goal_id: goal.id,
+    ym,
+    planned_amount: plannedAmount,
+    is_override: !!override,
+  });
+  return reply(env, ev.replyToken, amountAskCard({
+    plannedAmountThb: plannedAmount,
+    isOverride: !!override,
+    ym,
+  }));
+}
+
+async function advanceDcaLogToAllocation(ev, env, userId, amount) {
+  const state = await getDcaLogWizardState(env, userId);
+  if (!state) {
+    return reply(env, ev.replyToken, dcaLogInfoCard({
+      tone: 'warning',
+      title: 'หมดเวลายืนยัน',
+      subtitle: 'แตะ "บันทึก DCA เดือนนี้" ใหม่อีกครั้ง',
+    }));
+  }
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0 || amt > 10_000_000) {
+    return reply(env, ev.replyToken, dcaLogInfoCard({
+      tone: 'warning',
+      title: 'จำนวนเงินไม่ถูกต้อง',
+      subtitle: 'พิมพ์ตัวเลขใหม่ เช่น "30000" / "30K" หรือส่งภาพ slip',
+    }));
+  }
+  state.step = 'allocation';
+  state.data.amount = amt;
+  await saveDcaLogWizardState(env, userId, state);
+  return reply(env, ev.replyToken, allocationAskCard({
+    amount: amt,
+    ym: state.data.ym,
+    allocation: state.data.allocation,
+  }));
+}
+
+async function finalizeDcaLog(ev, env, userId, { kind, singleClass }) {
+  const state = await getDcaLogWizardState(env, userId);
+  if (!state || state.step !== 'allocation' || !state.data?.amount) {
+    return reply(env, ev.replyToken, dcaLogInfoCard({
+      tone: 'warning',
+      title: 'หมดเวลายืนยัน',
+      subtitle: 'แตะ "บันทึก DCA เดือนนี้" ใหม่อีกครั้ง',
+    }));
+  }
+  const amount = Number(state.data.amount);
+  const allocation = state.data.allocation || {};
+  const goalId = state.data.goalId;
+
+  // Decide the breakdown to write
+  const breakdown = [];
+  if (kind === 'single' && singleClass && isValidClass(singleClass)) {
+    breakdown.push({ class: singleClass, amount_thb: amount });
+  } else {
+    // auto-split per plan
+    const totalWeight = Object.values(allocation).reduce((s, v) => s + Number(v || 0), 0) || 1;
+    for (const [cls, weight] of Object.entries(allocation)) {
+      const w = Number(weight) || 0;
+      if (w <= 0) continue;
+      breakdown.push({
+        class: cls,
+        amount_thb: amount * (w / totalWeight),
+      });
+    }
+    // Fallback if the goal has no allocation set at all
+    if (!breakdown.length) {
+      breakdown.push({ class: 'cash', amount_thb: amount });
+    }
+  }
+
+  // Persist each slice as its own row
+  for (const b of breakdown) {
+    await recordContribution(env, userId, {
+      goalId,
+      assetClass: b.class,
+      amountThb: b.amount_thb,
+      notes: kind === 'auto' ? 'wizard:auto-split' : `wizard:single:${b.class}`,
+    });
+  }
+
+  await deleteDcaLogWizardState(env, userId);
+  const totalThisMonth = await getContributionsThisMonth(env, userId, goalId, new Date());
+  await logEvent(env, userId, 'contribution_recorded', {
+    goal_id: goalId, amount_thb: amount,
+    asset_class: kind === 'single' ? singleClass : 'auto-split',
+    via: 'wizard',
+    breakdown: breakdown.map((b) => ({ class: b.class, amount_thb: Math.round(b.amount_thb) })),
+  });
+  return reply(env, ev.replyToken, dcaLogResultCard({
+    amount,
+    breakdown,
+    totalThisMonth,
+    ym: state.data.ym,
+    kind: kind === 'single' ? 'single' : 'auto',
+  }));
+}
+
+// Free-form text answer during the DCA log wizard amount step.
+// User can type "30000" / "30K" / "ตามแผน" / any number alias.
+async function handleDcaLogAmountText(ev, env, userId, text, state) {
+  const trimmed = String(text || '').trim().toLowerCase();
+  if (['ยกเลิก', 'cancel', 'stop', 'หยุด'].includes(trimmed)) {
+    await deleteDcaLogWizardState(env, userId);
+    return reply(env, ev.replyToken, dcaLogInfoCard({
+      tone: 'info',
+      title: 'ยกเลิกการบันทึก DCA',
+    }));
+  }
+  if (['ตามแผน', 'plan', 'ตามแผนเดิม'].includes(trimmed)) {
+    return advanceDcaLogToAllocation(ev, env, userId, state.data.plannedAmount);
+  }
+  const amt = parseAmount(text);
+  if (!Number.isFinite(amt) || amt <= 0) {
+    return reply(env, ev.replyToken, dcaLogInfoCard({
+      tone: 'warning',
+      title: 'อ่านตัวเลขไม่ออก',
+      subtitle: 'พิมพ์ใหม่ เช่น "30000" / "30K" หรือส่งภาพ slip',
+    }));
+  }
+  return advanceDcaLogToAllocation(ev, env, userId, amt);
+}
+
+// Picture upload during the DCA log wizard amount step — Claude vision
+// parses a transfer-slip / fund-purchase confirmation for the amount.
+async function handleDcaLogImage(ev, env, userId, messageId, state) {
+  await showLoading(env, userId, 25);
+  let extracted;
+  try {
+    const { bytes, mimeType } = await fetchLineImage(env, messageId);
+    extracted = await extractDcaReceipt(env, bytes, mimeType);
+  } catch (err) {
+    console.error('dca receipt error', err);
+    await logEvent(env, userId, 'dca_log_image_failed', { error: String(err?.message || err).slice(0, 200) });
+    return push(env, userId, dcaLogInfoCard({
+      tone: 'warning',
+      title: 'อ่านภาพไม่สำเร็จ',
+      subtitle: 'ลองส่งภาพที่คมชัดขึ้น หรือพิมพ์ตัวเลขเอง',
+    }));
+  }
+  if (extracted?.error || extracted?.amount_thb == null) {
+    await logEvent(env, userId, 'dca_log_image_rejected', { reason: extracted?.error || 'no_amount' });
+    return push(env, userId, dcaLogInfoCard({
+      tone: 'warning',
+      title: 'ไม่พบจำนวนเงินในภาพ',
+      subtitle: 'ภาพอาจไม่ใช่ slip โอนเงิน — ลองพิมพ์ตัวเลขเอง เช่น "30000"',
+    }));
+  }
+  const amt = Number(extracted.amount_thb);
+  if (!Number.isFinite(amt) || amt <= 0) {
+    return push(env, userId, dcaLogInfoCard({
+      tone: 'warning',
+      title: 'อ่านจำนวนเงินไม่ออก',
+      subtitle: 'ลองส่งภาพที่คมชัดขึ้น หรือพิมพ์ตัวเลขเอง',
+    }));
+  }
+  await logEvent(env, userId, 'dca_log_image_parsed', {
+    amount_thb: amt,
+    description: extracted.description || null,
+  });
+  // Advance with the parsed amount. Use push() since this came from an image
+  // event (no replyToken bound to it through showLoading already).
+  state.step = 'allocation';
+  state.data.amount = amt;
+  await saveDcaLogWizardState(env, userId, state);
+  return push(env, userId, allocationAskCard({
+    amount: amt,
+    ym: state.data.ym,
+    allocation: state.data.allocation,
+  }));
 }
 
 // AIWealthOS Phase 2 — daily nudge cron.

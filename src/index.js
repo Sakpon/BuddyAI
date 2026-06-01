@@ -50,11 +50,12 @@ import {
   saveMessage,
   setActivePortfolio,
   togglePendingTransactionSelection,
-  updatePortfolioFromPending,
   subscribeAlert,
   subscribeNews,
   unsubscribeAlert,
   unsubscribeNews,
+  updateGoalFields,
+  updatePortfolioFromPending,
   upsertUser,
 } from './db.js';
 import { enrollmentCard } from './flex/enrollment.js';
@@ -110,7 +111,7 @@ import {
   validateTargetAmount,
   validateTargetYear,
 } from './goals.js';
-import { goalCard, goalConfirmCard } from './flex/goal.js';
+import { goalCard, goalConfirmCard, goalEditMenuCard } from './flex/goal.js';
 import {
   DRIFT_THRESHOLD_PP,
   bangkokWeekRange,
@@ -143,6 +144,8 @@ const HELP_TH = [
   '• "ติด <SYM> <ประเภท>" — ติดป้ายประเภทสินทรัพย์ (thai_equity, global_etf, thai_fund, cash, hk_equity, crypto)',
   '• "ตั้งเป้าหมาย" — ตั้งเป้าความมั่งคั่งระยะยาวพร้อมแผน DCA',
   '• "เป้าหมาย" / "goal" — ดูเป้าหมายและความก้าวหน้า',
+  '• "ปรับเป้าหมาย" — เมนูแก้ไขเป้าหมาย (ยอด/ปี/ผลตอบแทน/สัดส่วน)',
+  '• "ปรับเป้า <จำนวน>" / "ปรับปี <year>" / "ปรับผลตอบแทน <%>" / "ปรับสัดส่วน <a b c>" — แก้ทีละช่อง',
   '• "เติม <จำนวน> [<ประเภท>]" — บันทึก DCA เช่น "เติม 30000" หรือ "เติม 30K thai_equity"',
   '• "ปันผล <SYM> <จำนวน>" — บันทึกปันผลที่ได้รับ (หรือ "ปันผล PTT 2.15 1000" สำหรับ ต่อหุ้น × จำนวน)',
   '• "รายการปันผล" — ดูปันผลที่บันทึกไว้ + ยอดสะสมปีนี้',
@@ -506,6 +509,11 @@ async function handlePostback(ev, env, userId) {
     return logGoalMonthlyContribution(ev, env, userId);
   }
 
+  if (action === 'goal-edit') {
+    const field = data.get('field');
+    return startGoalEditStep(ev, env, userId, field);
+  }
+
   if (action === 'welcome-demo') {
     return reply(env, ev.replyToken, welcomeDemoCard());
   }
@@ -772,6 +780,12 @@ async function handleText(ev, env, userId, text) {
   }
   if (cmd === 'clear-goal') {
     return clearGoalHandler(ev, env, userId);
+  }
+  if (cmd === 'goal-edit-menu') {
+    return showGoalEditMenu(ev, env, userId);
+  }
+  if (cmd === 'goal-edit-field') {
+    return applyGoalFieldEdit(ev, env, userId, match.arg);
   }
   if (cmd === 'contribute') {
     return recordContributionHandler(ev, env, userId, match.arg);
@@ -1302,6 +1316,20 @@ function matchCommand(text) {
     return { cmd: 'clear-goal' };
   }
 
+  // In-place edits of the active goal — open the menu card or jump
+  // straight to a field via text shortcut.
+  if (['ปรับเป้าหมาย', 'แก้เป้าหมาย', 'edit goal'].includes(tl)) {
+    return { cmd: 'goal-edit-menu' };
+  }
+  const editAmount = t.match(/^(?:ปรับเป้า|ปรับยอด|edit target|edit amount)\s+(.+)$/i);
+  if (editAmount) return { cmd: 'goal-edit-field', arg: { field: 'amount', raw: editAmount[1].trim() } };
+  const editYear = t.match(/^(?:ปรับปี|edit year|edit horizon)\s+(.+)$/i);
+  if (editYear) return { cmd: 'goal-edit-field', arg: { field: 'horizon', raw: editYear[1].trim() } };
+  const editReturn = t.match(/^(?:ปรับผลตอบแทน|edit return)\s+(.+)$/i);
+  if (editReturn) return { cmd: 'goal-edit-field', arg: { field: 'return', raw: editReturn[1].trim() } };
+  const editAlloc = t.match(/^(?:ปรับสัดส่วน|edit allocation)\s+(.+)$/i);
+  if (editAlloc) return { cmd: 'goal-edit-field', arg: { field: 'allocation', raw: editAlloc[1].trim() } };
+
   // เติม <amount> [<class>]   →  log a DCA contribution
   //   เติม 30000              → split per goal allocation
   //   เติม 30000 thai_equity   → all into one class
@@ -1658,8 +1686,18 @@ async function handleGoalWizardAnswer(ev, env, userId, text, state) {
     await deleteGoalWizardState(env, userId);
     return reply(env, ev.replyToken, actionAckCard({
       tone: 'info',
-      title: 'ยกเลิกการตั้งเป้าหมายแล้ว',
+      title: 'ยกเลิกแล้ว',
     }));
+  }
+
+  // Edit mode — single-step. step holds the field name; answer goes straight
+  // through applyGoalFieldEdit which patches the goal + recomputes monthly
+  // contribution when needed.
+  if (state.mode === 'edit') {
+    return applyGoalFieldEdit(ev, env, userId, {
+      field: state.step,
+      raw: trimmed,
+    });
   }
 
   if (state.step === 'target') {
@@ -1849,6 +1887,225 @@ async function clearGoalHandler(ev, env, userId) {
     tone: 'info',
     title: 'ลบเป้าหมายแล้ว',
     subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อเริ่มใหม่',
+  }));
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// AIWealthOS goal — in-place edits
+//
+// Two entry points:
+//   1. "ปรับเป้าหมาย" → menu card with 4 field buttons → postback
+//      goal-edit&field=<...> → startGoalEditStep stages a one-question
+//      wizard in KV → user types answer → handleGoalWizardAnswer routes
+//      to the edit-mode branch → applyGoalFieldEdit patches the goal,
+//      recomputes monthly_contribution_thb when amount/year/return
+//      change, replies with the updated goal card.
+//
+//   2. Text shortcut "ปรับเป้า 30M" / "ปรับปี 2045" / "ปรับผลตอบแทน 7.5"
+//      / "ปรับสัดส่วน 70 20 10" → cmd='goal-edit-field' →
+//      applyGoalFieldEdit directly, no wizard.
+// ────────────────────────────────────────────────────────────────────────
+
+const EDIT_FIELD_PROMPTS = {
+  amount: {
+    title: '💰 ปรับยอดเป้าหมาย',
+    subtitle: 'พิมพ์จำนวนเงินใหม่ — เช่น "30M" หรือ "20000000"',
+  },
+  horizon: {
+    title: '📅 ปรับระยะเวลา',
+    subtitle: 'พิมพ์ปีเป้าหมาย เช่น "2045" หรือพิมพ์จำนวนปี เช่น "20"',
+  },
+  return: {
+    title: '📈 ปรับสมมุติผลตอบแทน',
+    subtitle: 'พิมพ์ % ต่อปี เช่น "7.5"',
+  },
+  allocation: {
+    title: '🎯 ปรับสัดส่วนการลงทุน',
+    subtitle: 'พิมพ์ 3 ตัวเลขรวม 100 (หุ้นไทย / ETF ตปท / เงินสด) เช่น "70 20 10"',
+  },
+};
+
+async function showGoalEditMenu(ev, env, userId) {
+  const goal = await getActiveGoal(env, userId);
+  if (!goal) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยังไม่ได้ตั้งเป้าหมาย',
+      subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อเริ่มต้น',
+    }));
+  }
+  await logEvent(env, userId, 'goal_edit_menu_viewed', { goal_id: goal.id });
+  return reply(env, ev.replyToken, goalEditMenuCard({ goal }));
+}
+
+async function startGoalEditStep(ev, env, userId, field) {
+  const goal = await getActiveGoal(env, userId);
+  if (!goal) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยังไม่ได้ตั้งเป้าหมาย',
+    }));
+  }
+  const normalisedField = String(field || '').replace(/^edit-/, '');
+  const prompt = EDIT_FIELD_PROMPTS[normalisedField];
+  if (!prompt) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'warning',
+      title: 'หัวข้อไม่ถูกต้อง',
+    }));
+  }
+  // Stash an "edit" wizard in the same KV slot the create wizard uses.
+  // handleGoalWizardAnswer branches on state.mode to route the answer
+  // through applyGoalFieldEdit instead of advancing the create flow.
+  await saveGoalWizardState(env, userId, {
+    mode: 'edit',
+    step: normalisedField,
+    data: {},
+  });
+  await logEvent(env, userId, 'goal_edit_started', {
+    goal_id: goal.id,
+    field: normalisedField,
+  });
+  return reply(env, ev.replyToken, actionAckCard({
+    tone: 'info',
+    title: prompt.title,
+    subtitle: prompt.subtitle,
+    lines: [
+      { text: 'พิมพ์ "ยกเลิก" เพื่อหยุด', color: '#94A3B8' },
+    ],
+  }));
+}
+
+// Parse + validate + patch. Shared by the menu-driven flow and the text
+// shortcut. Returns the updated card or an error ack.
+async function applyGoalFieldEdit(ev, env, userId, arg) {
+  const goal = await getActiveGoal(env, userId);
+  if (!goal) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยังไม่ได้ตั้งเป้าหมาย',
+      subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อเริ่มต้น',
+    }));
+  }
+  const field = arg?.field;
+  const raw = String(arg?.raw || '').trim();
+
+  let patch = null;
+  let parsedValue = null;
+  let humanValue = '';
+
+  if (field === 'amount') {
+    const amount = parseAmount(raw);
+    const err = validateTargetAmount(amount);
+    if (err) return replyEditError(ev, env, err, 'amount');
+    parsedValue = amount;
+    humanValue = `${amount.toLocaleString('en-US')} บาท`;
+    patch = { targetAmountThb: amount };
+  } else if (field === 'horizon') {
+    const targetYear = parseHorizon(raw);
+    const err = validateTargetYear(targetYear);
+    if (err) return replyEditError(ev, env, err, 'horizon');
+    parsedValue = targetYear;
+    const years = targetYear - new Date().getUTCFullYear();
+    humanValue = `ปี ${targetYear} (อีก ${years} ปี)`;
+    patch = { targetYear };
+  } else if (field === 'return') {
+    const pct = Number(String(raw).replace(/[%\s]/g, ''));
+    const err = validateExpectedReturn(pct);
+    if (err) return replyEditError(ev, env, err, 'return');
+    parsedValue = pct;
+    humanValue = `${Number(pct).toFixed(1)}% / ปี`;
+    patch = { expectedReturnPct: pct };
+  } else if (field === 'allocation') {
+    const alloc = parseAllocation(raw);
+    const err = alloc ? validateAllocation(alloc) : 'อ่านสัดส่วนไม่ออก';
+    if (err) return replyEditError(ev, env, err, 'allocation');
+    parsedValue = alloc;
+    humanValue = Object.entries(alloc)
+      .filter(([, v]) => Number(v) > 0)
+      .map(([cls, v]) => `${cls.split('_')[0]} ${Math.round(Number(v) * 100)}%`)
+      .join(' · ');
+    patch = { allocationTargets: alloc };
+  } else {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'warning',
+      title: 'หัวข้อไม่ถูกต้อง',
+    }));
+  }
+
+  // Amount/year/return changes invalidate the previous monthly DCA — recompute.
+  if (field === 'amount' || field === 'horizon' || field === 'return') {
+    const newMonthly = solveMonthlyContribution({
+      targetAmountThb: patch.targetAmountThb ?? goal.targetAmountThb,
+      targetYear: patch.targetYear ?? goal.targetYear,
+      expectedReturnPct: patch.expectedReturnPct ?? goal.expectedReturnPct,
+    });
+    patch.monthlyContributionThb = newMonthly;
+  }
+
+  const result = await updateGoalFields(env, userId, patch);
+  if (!result.ok) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'warning',
+      title: 'แก้ไขไม่สำเร็จ',
+    }));
+  }
+
+  await deleteGoalWizardState(env, userId);
+  await logEvent(env, userId, 'goal_edited', {
+    goal_id: result.goal.id,
+    field,
+    new_value: parsedValue,
+    new_monthly_thb: patch.monthlyContributionThb
+      ? Math.round(patch.monthlyContributionThb)
+      : null,
+  });
+
+  // Build the result ack + the updated goal card together so the user sees
+  // both the diff and the recomputed plan in one reply.
+  const lines = [
+    { label: 'หัวข้อที่แก้', value: EDIT_FIELD_PROMPTS[field].title.replace(/^.{2}\s/, '') },
+    { label: 'ค่าใหม่', value: humanValue },
+  ];
+  if (patch.monthlyContributionThb) {
+    lines.push({
+      label: 'DCA ใหม่ / เดือน',
+      value: `${Math.round(patch.monthlyContributionThb).toLocaleString('en-US')} บาท`,
+      color: '#16A34A',
+    });
+  }
+  const ack = actionAckCard({
+    title: 'อัพเดตเป้าหมายแล้ว',
+    lines,
+  });
+
+  // Re-render the goal card with the freshly-updated values too.
+  const netWorth = await getNetWorth(env, userId).catch(() => ({ total_thb: 0 }));
+  const monthsElapsed = Math.max(0, Math.round(
+    (Date.now() / 1000 - result.goal.createdAt) / (60 * 60 * 24 * 30.4375),
+  ));
+  const expectedNowThb = expectedFutureValue({
+    pmt: result.goal.monthlyContributionThb,
+    expectedReturnPct: result.goal.expectedReturnPct,
+    monthsElapsed,
+  });
+  const contributionsTotalThb = await getContributionsTotal(env, userId, result.goal.id);
+  const updatedGoalCard = goalCard({
+    goal: result.goal,
+    netWorthThb: netWorth.total_thb,
+    expectedNowThb,
+    contributionsTotalThb,
+    monthsElapsed,
+  });
+  return reply(env, ev.replyToken, [ack, updatedGoalCard]);
+}
+
+async function replyEditError(ev, env, err, field) {
+  const prompt = EDIT_FIELD_PROMPTS[field] || {};
+  return reply(env, ev.replyToken, actionAckCard({
+    tone: 'warning',
+    title: err,
+    subtitle: prompt.subtitle || 'ลองใหม่อีกครั้ง',
   }));
 }
 

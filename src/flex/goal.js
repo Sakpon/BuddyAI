@@ -148,6 +148,16 @@ export function goalCard({ goal, netWorthThb, expectedNowThb, contributionsTotal
             },
           },
           {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'message',
+              label: '✏️ ปรับเป้าหมาย',
+              text: 'ปรับเป้าหมาย',
+            },
+          },
+          {
             type: 'text',
             text: 'เพื่อการศึกษาเท่านั้น · ผลตอบแทนจริงไม่รับประกัน',
             size: 'xxs',
@@ -159,6 +169,128 @@ export function goalCard({ goal, netWorthThb, expectedNowThb, contributionsTotal
       },
     },
   };
+}
+
+// Edit menu — surfaced when user taps "✏️ ปรับเป้าหมาย" on the goal card
+// or types "ปรับเป้าหมาย". Four buttons, each fires a postback that opens
+// a one-question wizard for that specific field.
+export function goalEditMenuCard({ goal }) {
+  const years = goal.targetYear - new Date().getUTCFullYear();
+  return {
+    type: 'flex',
+    altText: 'ปรับเป้าหมาย — เลือกสิ่งที่อยากเปลี่ยน',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: heroBand('✏️ ปรับเป้าหมาย', 'เลือกหัวข้อที่อยากเปลี่ยน'),
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          editFieldRow(
+            '💰',
+            'ปรับยอดเป้าหมาย',
+            `ตอนนี้: ${fmtThb(goal.targetAmountThb)} บาท`,
+            'edit-amount',
+            '#0EA5E9',
+          ),
+          editFieldRow(
+            '📅',
+            'ปรับระยะเวลา',
+            `ตอนนี้: ปี ${goal.targetYear} (อีก ${years} ปี)`,
+            'edit-horizon',
+            '#0EA5E9',
+          ),
+          editFieldRow(
+            '📈',
+            'ปรับสมมุติผลตอบแทน',
+            `ตอนนี้: ${Number(goal.expectedReturnPct).toFixed(1)}% / ปี`,
+            'edit-return',
+            '#16A34A',
+          ),
+          editFieldRow(
+            '🎯',
+            'ปรับสัดส่วนการลงทุน',
+            allocationSummary(goal.allocationTargets),
+            'edit-allocation',
+            '#D97706',
+          ),
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'message',
+              label: 'กลับไปดูเป้าหมาย',
+              text: 'เป้าหมาย',
+            },
+          },
+          {
+            type: 'text',
+            text: 'การปรับยอด/เวลา/ผลตอบแทน บอท จะคำนวณ DCA ใหม่ให้อัตโนมัติ',
+            size: 'xxs',
+            color: '#94A3B8',
+            wrap: true,
+            align: 'center',
+          },
+        ],
+      },
+    },
+  };
+}
+
+function editFieldRow(emoji, title, current, postbackField, accentColor) {
+  return {
+    type: 'box',
+    layout: 'vertical',
+    paddingAll: '10px',
+    cornerRadius: '8px',
+    backgroundColor: '#F8FAFC',
+    spacing: 'xs',
+    margin: 'sm',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'sm',
+        contents: [
+          { type: 'text', text: emoji, size: 'md', flex: 0 },
+          { type: 'text', text: title, size: 'sm', weight: 'bold', color: '#0F172A', flex: 5, gravity: 'center' },
+        ],
+      },
+      { type: 'text', text: current, size: 'xxs', color: '#475569' },
+      {
+        type: 'button',
+        style: 'primary',
+        color: accentColor,
+        height: 'sm',
+        margin: 'sm',
+        action: {
+          type: 'postback',
+          label: 'ปรับ',
+          data: `action=goal-edit&field=${postbackField}`,
+          displayText: `ปรับ ${title}`,
+        },
+      },
+    ],
+  };
+}
+
+function allocationSummary(allocation) {
+  if (!allocation || typeof allocation !== 'object') return 'ยังไม่ได้ตั้ง';
+  const parts = Object.entries(allocation)
+    .filter(([, pct]) => Number(pct) > 0)
+    .slice(0, 4)
+    .map(([cls, pct]) => `${cls.split('_')[0]} ${Math.round(Number(pct) * 100)}%`);
+  return 'ตอนนี้: ' + (parts.join(' · ') || '—');
 }
 
 // Confirmation card shown at the end of the wizard. User taps "ยืนยัน" to

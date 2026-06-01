@@ -19,6 +19,7 @@ import {
   getActiveGoal,
   getActivePortfolio,
   getContributionsByClass,
+  getContributionsThisMonth,
   getContributionsTotal,
   getHistory,
   getJourney,
@@ -107,11 +108,16 @@ import {
 import { goalCard, goalConfirmCard } from './flex/goal.js';
 import {
   DRIFT_THRESHOLD_PP,
+  bangkokWeekRange,
+  bangkokWeekToken,
+  computeDrift,
   evaluateUserNudges,
   markDcaSent,
   markDriftSent,
+  markWeeklySent,
 } from './nudges.js';
 import { dcaReminderCard, driftNudgeCard } from './flex/nudges.js';
+import { weeklyStatusCard } from './flex/weeklyStatus.js';
 import { adminPage } from './admin/page.js';
 import {
   adminApiCronLogs,
@@ -191,6 +197,13 @@ export default {
       return json({ ok: true, triggered: 'daily-nudges', force });
     }
 
+    if (url.pathname === '/test-weekly-status') {
+      if (!authorised(request, env)) return unauthorised(false);
+      const force = url.searchParams.get('force') === '1';
+      ctx.waitUntil(runWeeklyStatusCron(env, { force }));
+      return json({ ok: true, triggered: 'weekly-status', force });
+    }
+
     if (url.pathname === '/test-subs') {
       if (!authorised(request, env)) return unauthorised(false);
       const subs = await getSubscribedUsers(env);
@@ -199,11 +212,12 @@ export default {
 
     if (url.pathname === '/test-log') {
       if (!authorised(request, env)) return unauthorised(false);
-      const [alertLog, newsLog, fxLog, nudgesLog] = await Promise.all([
+      const [alertLog, newsLog, fxLog, nudgesLog, weeklyLog] = await Promise.all([
         env.SESSION_KV.get('cron:last-run'),
         env.SESSION_KV.get('news:last-run'),
         env.SESSION_KV.get('fx:last-run'),
         env.SESSION_KV.get('nudges:last-run'),
+        env.SESSION_KV.get('weekly:last-run'),
       ]);
       return json({
         ok: true,
@@ -211,6 +225,7 @@ export default {
         news: newsLog ? JSON.parse(newsLog) : null,
         fx: fxLog ? JSON.parse(fxLog) : null,
         nudges: nudgesLog ? JSON.parse(nudgesLog) : null,
+        weekly: weeklyLog ? JSON.parse(weeklyLog) : null,
       });
     }
 
@@ -1957,6 +1972,101 @@ async function runNudgesCron(env, { force = false } = {}) {
       'nudges:last-run',
       JSON.stringify(result),
       { expirationTtl: 60 * 60 * 24 * 7 },
+    );
+  }
+}
+
+// AIWealthOS Phase 2 (cont.) — weekly Sunday goal-status digest.
+//
+// Distinct from runNudgesCron (which is behavior-prompting). This is a quiet
+// retrospective: "here's where you stand vs the plan this week". Fires once
+// per ISO week per user.
+async function runWeeklyStatusCron(env, { force = false } = {}) {
+  const startedAt = new Date().toISOString();
+  const result = {
+    startedAt,
+    candidates: 0,
+    sent: 0,
+    skipped_throttled: 0,
+    skipped_no_goal: 0,
+    errors: [],
+  };
+
+  try {
+    const userIds = await getUsersWithActiveGoals(env);
+    result.candidates = userIds.length;
+    const now = new Date();
+    const weekToken = bangkokWeekToken(now);
+    const { startIso, endIso } = bangkokWeekRange(now);
+
+    for (const userId of userIds) {
+      try {
+        const goal = await getActiveGoal(env, userId);
+        if (!goal) { result.skipped_no_goal++; continue; }
+
+        const key = `nudges:weekly:${userId}:${weekToken}`;
+        if (!force) {
+          const already = await env.SESSION_KV.get(key);
+          if (already) { result.skipped_throttled++; continue; }
+        }
+
+        const netWorth = await getNetWorth(env, userId);
+        const contributionsTotalThb = await getContributionsTotal(env, userId, goal.id);
+        const contributionsThisMonthThb = await getContributionsThisMonth(env, userId, goal.id, now);
+        const monthsElapsed = Math.max(0, Math.round(
+          (Date.now() / 1000 - goal.createdAt) / (60 * 60 * 24 * 30.4375),
+        ));
+        const expectedNowThb = expectedFutureValue({
+          pmt: goal.monthlyContributionThb,
+          expectedReturnPct: goal.expectedReturnPct,
+          monthsElapsed,
+        });
+        const driftReport = computeDrift(netWorth, goal.allocationTargets);
+        const topClass = driftReport?.overweight || null;
+        const bottomClass = driftReport?.underweight || null;
+
+        const ok = await push(env, userId, weeklyStatusCard({
+          goal,
+          netWorthThb: netWorth.total_thb,
+          expectedNowThb,
+          contributionsTotalThb,
+          contributionsThisMonthThb,
+          monthsElapsed,
+          topClass,
+          bottomClass,
+          weekStartIso: startIso,
+          weekEndIso: endIso,
+        }));
+
+        if (ok) {
+          if (!force) await markWeeklySent(env, key);
+          result.sent++;
+          await logEvent(env, userId, 'weekly_status_sent', {
+            goal_id: goal.id,
+            week: weekToken,
+            net_worth_thb: Math.round(netWorth.total_thb || 0),
+            expected_now_thb: Math.round(expectedNowThb || 0),
+            contributions_this_month_thb: Math.round(contributionsThisMonthThb || 0),
+            max_drift_pp: driftReport ? Math.round(driftReport.maxDriftPP) : 0,
+            forced: !!force,
+          });
+        }
+      } catch (perUserErr) {
+        result.errors.push({
+          userId,
+          error: String(perUserErr?.message || perUserErr).slice(0, 200),
+        });
+      }
+    }
+  } catch (err) {
+    result.fatal = String(err?.message || err).slice(0, 300);
+    console.error('weekly status cron error', err);
+  } finally {
+    result.finishedAt = new Date().toISOString();
+    await env.SESSION_KV.put(
+      'weekly:last-run',
+      JSON.stringify(result),
+      { expirationTtl: 60 * 60 * 24 * 14 },
     );
   }
 }

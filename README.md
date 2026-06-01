@@ -20,6 +20,7 @@ context and the daily alert to that portfolio.
 - **Daily alert:** GitHub Actions cron (`.github/workflows/daily-alert.yml`) hits the worker's `/test-alert` endpoint at 02:00 UTC = 09:00 Bangkok, Mon–Fri
 - **Daily portfolio news:** GitHub Actions cron (`.github/workflows/daily-news.yml`) hits the worker's `/test-news` endpoint at 01:00 UTC = 08:00 Bangkok, Mon–Fri — per-user per-symbol thematic news + recommended action
 - **Wealth nudges (Phase 2 ACT):** GitHub Actions cron (`.github/workflows/daily-nudges.yml`) hits `/test-nudges` daily at 02:30 UTC = 09:30 BKK. Per-user drift detection (max once/7-days when allocation strays >5pp from goal) + monthly DCA reminder (1st of each month). Manual `workflow_dispatch` with `force: true` bypasses throttles for testing.
+- **Weekly goal status (Phase 2 ACT):** GitHub Actions cron (`.github/workflows/weekly-status.yml`) hits `/test-weekly-status` Sundays at 13:00 UTC = 20:00 BKK. Per-user retrospective digest — on-track/lagging status, net-worth vs glidepath, this-month DCA discipline, top over/underweight class. Once per ISO week per user (server-side throttle via `bangkokWeekToken`).
 
 ## Layout
 

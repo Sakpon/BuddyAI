@@ -336,6 +336,47 @@ export async function generateDailyNewsForHoldings(env, holdings, headlinesBySym
   return parseJsonLoose(raw);
 }
 
+// AIWealthOS Phase 4 — contextual explainer fallback.
+//
+// When a user types "อธิบาย <something>" and the term isn't in the curated
+// static topic library, ask Claude to explain it in plain Thai. Sonnet 4.6
+// for quality; uses the user's current holdings as soft context so the
+// explanation can reference real names where it naturally fits.
+//
+// Strict "education, not advice" framing — same disclaimer language used
+// in the other AI flows so this stays on the safe side of ก.ล.ต. rules.
+export async function generateContextualExplainer(env, query, holdings) {
+  const portfolioContext = holdings && holdings.length
+    ? `บริบทพอร์ตของผู้ใช้ (ใช้ประกอบเฉพาะกรณีที่เกี่ยวข้องตรงๆ — ไม่ต้องเอ่ยถ้าไม่จำเป็น):\n${holdings
+        .slice(0, 12)
+        .map((h) => `- ${h.symbol}${h.weight_pct ? ` (${Math.round(h.weight_pct)}%)` : ''}`)
+        .join('\n')}`
+    : '(ผู้ใช้ยังไม่มีพอร์ต)';
+
+  const prompt = [
+    {
+      role: 'user',
+      content:
+        `ผู้ใช้พิมพ์มาว่า "อธิบาย ${query}" — โปรดอธิบายเป็นภาษาไทยแบบเข้าใจง่าย\n\n` +
+        portfolioContext +
+        '\n\nรูปแบบคำตอบ (ตอบเป็นข้อความธรรมดา ไม่ต้องเป็น JSON):\n' +
+        '1. นิยามสั้น 1-2 ประโยค\n' +
+        '2. ทำไมเรื่องนี้สำคัญ / เมื่อไหร่ที่นักลงทุนต้องรู้\n' +
+        '3. (ใส่เฉพาะถ้าเกี่ยวข้องชัดเจน) ตัวอย่าง 1 ตัวจากพอร์ตของผู้ใช้\n\n' +
+        'กฎ:\n' +
+        '- ภาษาไทยกระชับ เหมือนเพื่อนนักลงทุนอธิบาย ไม่ใช่บทความวิจัย\n' +
+        '- ห้ามแนะนำ "ซื้อ/ขาย" ตรงๆ — นี่คือคำอธิบายเชิงความรู้\n' +
+        '- ถ้าไม่รู้จักคำที่ถาม ให้บอกตรงๆ "ยังไม่มีข้อมูล" ไม่ต้องเดา\n' +
+        '- ความยาวรวม 3-5 ย่อหน้า แต่ไม่เกิน 1500 อักษร',
+    },
+  ];
+
+  return askClaude(prompt, env, {
+    model: modelBalanced(env),
+    maxTokens: 1200,
+  });
+}
+
 export async function generatePicksViaClaude(env, holdings) {
   const portfolioContext = holdings && holdings.length
     ? `ผู้ใช้ถือหุ้นเหล่านี้อยู่: ${holdings

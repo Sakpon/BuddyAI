@@ -1,5 +1,6 @@
 import {
   askClaude,
+  generateContextualExplainer,
   generateDailyNewsForHoldings,
   generateHoldingsStatus,
   generatePicksViaClaude,
@@ -123,6 +124,8 @@ import {
 import { dcaReminderCard, driftNudgeCard } from './flex/nudges.js';
 import { weeklyStatusCard } from './flex/weeklyStatus.js';
 import { dividendConfirmCard, dividendsListCard } from './flex/dividends.js';
+import { aiExplainerCard, topicCard, topicListCard } from './flex/education.js';
+import { findTopic, listTopicsByCategory } from './education/topics.js';
 import { adminPage } from './admin/page.js';
 import {
   adminApiCronLogs,
@@ -143,6 +146,8 @@ const HELP_TH = [
   '• "เติม <จำนวน> [<ประเภท>]" — บันทึก DCA เช่น "เติม 30000" หรือ "เติม 30K thai_equity"',
   '• "ปันผล <SYM> <จำนวน>" — บันทึกปันผลที่ได้รับ (หรือ "ปันผล PTT 2.15 1000" สำหรับ ต่อหุ้น × จำนวน)',
   '• "รายการปันผล" — ดูปันผลที่บันทึกไว้ + ยอดสะสมปีนี้',
+  '• "อธิบาย" — ห้องสมุดอธิบายเรื่องการเงิน (DCA, ปันผล, P/E, ETF ฯลฯ)',
+  '• "อธิบาย <คำ>" — อธิบายคำศัพท์การเงิน เช่น "อธิบาย yield trap"',
   '• "ลบเป้าหมาย" — ลบเป้าหมายปัจจุบัน',
   '• "พอร์ต" — ดูพอร์ตที่ใช้งานอยู่',
   '• "พอร์ตทั้งหมด" — รายการพอร์ตทั้งหมด เลือก/ลบได้',
@@ -777,6 +782,12 @@ async function handleText(ev, env, userId, text) {
   if (cmd === 'record-dividend') {
     return recordDividendHandler(ev, env, userId, match.arg);
   }
+  if (cmd === 'list-topics') {
+    return showTopicList(ev, env, userId);
+  }
+  if (cmd === 'explain-topic') {
+    return explainTopicHandler(ev, env, userId, match.arg);
+  }
   if (cmd === 'rename-portfolio') {
     const newName = match.arg;
     if (!newName) {
@@ -1309,6 +1320,15 @@ function matchCommand(text) {
   // AIWealthOS Phase 3 — dividends
   if (['ปันผล', 'รายการปันผล', 'ปันผลทั้งหมด', 'dividends', 'div'].includes(tl)) {
     return { cmd: 'list-dividends' };
+  }
+
+  // AIWealthOS Phase 4 — LEARN module
+  if (['อธิบาย', 'หัวข้ออธิบาย', 'explain', 'glossary', 'learn'].includes(tl)) {
+    return { cmd: 'list-topics' };
+  }
+  const explainMatch = t.match(/^(?:อธิบาย|explain)\s+(.+)$/i);
+  if (explainMatch) {
+    return { cmd: 'explain-topic', arg: { query: explainMatch[1].trim() } };
   }
   // ปันผล <SYM> <amount>                — net amount received
   // ปันผล <SYM> <per_share> @ <qty>      — per-share × quantity (with optional @ separator)
@@ -2174,6 +2194,68 @@ async function showDividendsList(ev, env, userId) {
     all_time_thb: Math.round(allTimeTotal || 0),
   });
   return reply(env, ev.replyToken, dividendsListCard({ dividends, ytd, allTimeTotal }));
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// AIWealthOS Phase 4 — LEARN module handlers
+// ────────────────────────────────────────────────────────────────────────
+
+async function showTopicList(ev, env, userId) {
+  const groups = listTopicsByCategory();
+  await logEvent(env, userId, 'topic_list_viewed', {
+    total_topics: groups.reduce((s, g) => s + g.topics.length, 0),
+  });
+  return reply(env, ev.replyToken, topicListCard(groups));
+}
+
+async function explainTopicHandler(ev, env, userId, arg) {
+  const query = String(arg?.query || '').trim();
+  if (!query) {
+    return showTopicList(ev, env, userId);
+  }
+
+  // Static topic first — zero AI latency, no hallucination risk.
+  const topic = findTopic(query);
+  if (topic) {
+    await logEvent(env, userId, 'topic_explained', {
+      query,
+      matched: topic.key,
+      source: 'static',
+    });
+    return reply(env, ev.replyToken, topicCard(topic));
+  }
+
+  // Fallback: Claude contextual explainer using user's current holdings.
+  await showLoading(env, userId, 20);
+  let active = null;
+  try {
+    active = await getActivePortfolio(env, userId);
+  } catch (_) {
+    // ignore — explainer works without portfolio context too
+  }
+  let answer;
+  try {
+    answer = await generateContextualExplainer(env, query, active?.holdings || []);
+  } catch (err) {
+    console.error('explainer error', err);
+    await logEvent(env, userId, 'topic_explained_failed', {
+      query,
+      error: String(err?.message || err).slice(0, 200),
+    });
+    return push(env, userId, actionAckCard({
+      tone: 'warning',
+      title: 'ตอบไม่ทันตอนนี้',
+      subtitle: 'ลองใหม่อีกครั้งนะ หรือพิมพ์ "อธิบาย" เพื่อดูหัวข้อในห้องสมุด',
+    }));
+  }
+
+  await logEvent(env, userId, 'topic_explained', {
+    query,
+    matched: null,
+    source: 'ai',
+    answer_chars: (answer || '').length,
+  });
+  return push(env, userId, aiExplainerCard({ query, answer: answer || '— ไม่มีคำตอบ —' }));
 }
 
 async function runFxCron(env) {

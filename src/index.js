@@ -77,6 +77,10 @@ import { deleteSession, setSession } from './session.js';
 import { extractFromImage, fetchLineImage } from './vision.js';
 import { fetchYahooNewsForHoldings } from './news.js';
 import { fetchUnifiedQuotesForHoldings } from './marketdata.js';
+import { fetchAndStoreFxRates } from './fx.js';
+import { backfillAssetClasses, getNetWorth, tagSymbolClass } from './wealth.js';
+import { inferAssetClass, isValidClass, ASSET_CLASSES } from './assetclass.js';
+import { netWorthCard } from './flex/wealth.js';
 import { adminPage } from './admin/page.js';
 import {
   adminApiCronLogs,
@@ -90,6 +94,8 @@ const HELP_TH = [
   'คำสั่งที่ใช้ได้:',
   '• ส่งภาพพอร์ตจากแอปโบรกเกอร์ — ระบบจะอ่านและสรุปให้',
   '• ส่งภาพรายการซื้อขาย (เช่น SCB Easy Activity) — ระบบจะอ่านและให้กดยืนยันนำเข้า',
+  '• "ความมั่งคั่ง" / "net worth" — สรุปความมั่งคั่งสุทธิรวมทุกพอร์ตเป็นเงินบาท',
+  '• "ติด <SYM> <ประเภท>" — ติดป้ายประเภทสินทรัพย์ (thai_equity, global_etf, thai_fund, cash, hk_equity, crypto)',
   '• "พอร์ต" — ดูพอร์ตที่ใช้งานอยู่',
   '• "พอร์ตทั้งหมด" — รายการพอร์ตทั้งหมด เลือก/ลบได้',
   '• "เปลี่ยนชื่อ <ชื่อใหม่>" — เปลี่ยนชื่อพอร์ตที่ใช้งานอยู่',
@@ -137,6 +143,12 @@ export default {
       return json({ ok: true, triggered: 'daily-news' });
     }
 
+    if (url.pathname === '/test-fx') {
+      if (!authorised(request, env)) return unauthorised(false);
+      ctx.waitUntil(runFxCron(env));
+      return json({ ok: true, triggered: 'daily-fx' });
+    }
+
     if (url.pathname === '/test-subs') {
       if (!authorised(request, env)) return unauthorised(false);
       const subs = await getSubscribedUsers(env);
@@ -145,14 +157,16 @@ export default {
 
     if (url.pathname === '/test-log') {
       if (!authorised(request, env)) return unauthorised(false);
-      const [alertLog, newsLog] = await Promise.all([
+      const [alertLog, newsLog, fxLog] = await Promise.all([
         env.SESSION_KV.get('cron:last-run'),
         env.SESSION_KV.get('news:last-run'),
+        env.SESSION_KV.get('fx:last-run'),
       ]);
       return json({
         ok: true,
         alert: alertLog ? JSON.parse(alertLog) : null,
         news: newsLog ? JSON.parse(newsLog) : null,
+        fx: fxLog ? JSON.parse(fxLog) : null,
       });
     }
 
@@ -629,6 +643,12 @@ async function handleText(ev, env, userId, text) {
   }
   if (cmd === 'diary') {
     return showTradingDiary(ev, env, userId, match.arg);
+  }
+  if (cmd === 'net-worth') {
+    return showNetWorth(ev, env, userId);
+  }
+  if (cmd === 'tag-asset-class') {
+    return tagAssetClassHandler(ev, env, userId, match.arg);
   }
   if (cmd === 'rename-portfolio') {
     const newName = match.arg;
@@ -1128,6 +1148,22 @@ function matchCommand(text) {
     return { cmd: 'diary', arg: { days: null, symbol: null } };
   }
 
+  // AIWealthOS Phase 1 — net worth view
+  if (['ความมั่งคั่ง', 'ความมั่งคั่งสุทธิ', 'รายงานทรัพย์สิน', 'net worth', 'networth', 'wealth'].includes(tl)) {
+    return { cmd: 'net-worth' };
+  }
+
+  // Asset class tagging: "ติด <SYM> <class>"
+  //   ติด VOO global_etf      → tag VOO as global ETF
+  //   ติด SCBGOLD thai_fund    → tag SCBGOLD as Thai mutual fund
+  const tagMatch = t.match(/^(ติด|tag)\s+([A-Za-z0-9.\-]+)\s+([a-z_]+)$/i);
+  if (tagMatch) {
+    return {
+      cmd: 'tag-asset-class',
+      arg: { symbol: tagMatch[2].toUpperCase(), assetClass: tagMatch[3].toLowerCase() },
+    };
+  }
+
   // Buy / sell — accept Thai or English verb, optional "@" before price,
   // optional commas in numbers. Examples that all match:
   //   ซื้อ PTT 100 @ 35.50
@@ -1309,6 +1345,84 @@ async function sendDailyNews(env) {
     await env.SESSION_KV.put(
       'news:last-run',
       JSON.stringify({ startedAt, finishedAt: new Date().toISOString(), success, failed, error }),
+      { expirationTtl: 60 * 60 * 24 * 7 },
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// AIWealthOS Phase 1 — net worth + FX
+// ────────────────────────────────────────────────────────────────────────
+
+async function showNetWorth(ev, env, userId) {
+  // On first call after migration, backfill asset classes for the user's
+  // legacy holdings. Cheap and idempotent — runs once meaningful work then
+  // exits early on subsequent calls because the inferred class already matches.
+  await backfillAssetClasses(env, userId, inferAssetClass).catch(() => {});
+
+  const netWorth = await getNetWorth(env, userId);
+  await logEvent(env, userId, 'net_worth_viewed', {
+    total_thb: Math.round(netWorth.total_thb || 0),
+    class_count: (netWorth.breakdown || []).length,
+    portfolio_count: (netWorth.portfolios || []).length,
+    fx_fetched_at: netWorth.fx_fetched_at,
+  });
+  return reply(env, ev.replyToken, netWorthCard({ netWorth }));
+}
+
+async function tagAssetClassHandler(ev, env, userId, arg) {
+  const { symbol, assetClass } = arg || {};
+  if (!isValidClass(assetClass)) {
+    const valid = Object.keys(ASSET_CLASSES).join(', ');
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'warning',
+      title: 'ประเภทสินทรัพย์ไม่ถูกต้อง',
+      subtitle: `เลือกจาก: ${valid}`,
+    }));
+  }
+  const result = await tagSymbolClass(env, userId, symbol, assetClass);
+  if (!result.ok) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'warning',
+      title: 'ติดป้ายไม่สำเร็จ',
+    }));
+  }
+  if (result.changed === 0) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: `ไม่พบ ${result.symbol} ในพอร์ตของคุณ`,
+    }));
+  }
+  await logEvent(env, userId, 'asset_class_tagged', {
+    symbol: result.symbol,
+    class: result.class,
+    changed: result.changed,
+  });
+  const meta = ASSET_CLASSES[assetClass];
+  return reply(env, ev.replyToken, actionAckCard({
+    title: `ติดป้าย ${result.symbol} เป็น "${meta.label}" แล้ว`,
+    subtitle: `${meta.emoji} อัพเดต ${result.changed} แถว`,
+  }));
+}
+
+async function runFxCron(env) {
+  const startedAt = new Date().toISOString();
+  let stored = [];
+  let error = null;
+  try {
+    stored = await fetchAndStoreFxRates(env);
+  } catch (err) {
+    error = String(err?.message || err);
+    console.error('fx cron error', err);
+  } finally {
+    await env.SESSION_KV.put(
+      'fx:last-run',
+      JSON.stringify({
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        stored,
+        error,
+      }),
       { expirationTtl: 60 * 60 * 24 * 7 },
     );
   }

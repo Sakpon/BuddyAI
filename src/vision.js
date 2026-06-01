@@ -168,6 +168,81 @@ export async function extractPortfolio(env, bytes, mimeType) {
   return { error: 'not_portfolio', reason: result.reason || result.kind };
 }
 
+// DCA receipt extraction — used when the user is mid-way through the
+// "log DCA" wizard and uploads a screenshot of a bank transfer, mutual
+// fund purchase confirmation, or trade execution instead of typing the
+// amount. Returns just the THB amount + a confidence hint; we don't try
+// to infer the asset class from a single slip (way too noisy across the
+// many Thai bank/broker UIs).
+//
+// Shape: { amount_thb: number|null, currency, description, warnings[] }
+const DCA_RECEIPT_PROMPT = `คุณคือผู้ช่วยอ่านภาพ slip การโอนเงินหรือใบยืนยันซื้อกองทุน/หุ้นจากแอปธนาคารหรือโบรกเกอร์ไทย
+
+จุดประสงค์: หาจำนวนเงินรวมของรายการนี้ (เป็นเงินบาท หรือสกุลเงินอื่น)
+
+ตอบเป็น JSON เพียงอย่างเดียว:
+{
+  "amount_thb": <ตัวเลขรวมในหน่วยบาท ถ้าเป็นสกุลเงินอื่นให้ใส่ amount_native + currency ด้วย>,
+  "amount_native": <ตัวเลขในสกุลต้นทาง หรือ null>,
+  "currency": "THB | USD | HKD | ...",
+  "description": "<1 วลีสั้นๆ บอกว่าเป็นรายการอะไร เช่น 'โอนเข้าบัญชี SCB' / 'ซื้อกองทุน SCBGOLD'>",
+  "warnings": [<คำเตือนถ้าตัวเลขไม่ครบหรือไม่ชัด>]
+}
+
+ถ้าไม่สามารถระบุจำนวนเงินจากภาพได้ ตอบ {"error":"unreadable","reason":"..."}
+ถ้าภาพไม่ใช่ slip การโอน/ซื้อ ตอบ {"error":"not_receipt","reason":"..."}`;
+
+export async function extractDcaReceipt(env, bytes, mimeType) {
+  const url = env.AI_GATEWAY_URL && env.AI_GATEWAY_URL !== 'REPLACE_WITH_YOUR_AI_GATEWAY_URL'
+    ? env.AI_GATEWAY_URL.replace(/\/$/, '') + '/v1/messages'
+    : ANTHROPIC_DIRECT;
+
+  const body = {
+    model: env.CLAUDE_MODEL_VISION || env.CLAUDE_MODEL_BALANCED || 'claude-sonnet-4-6',
+    max_tokens: 800,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: normaliseMime(mimeType),
+              data: toBase64(bytes),
+            },
+          },
+          { type: 'text', text: DCA_RECEIPT_PROMPT },
+        ],
+      },
+    ],
+  };
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': env.ANTHROPIC_API_KEY,
+      'anthropic-version': ANTHROPIC_VERSION,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`vision ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const raw = (data.content || [])
+    .filter((p) => p.type === 'text')
+    .map((p) => p.text)
+    .join('\n')
+    .trim();
+
+  const parsed = parseJsonLoose(raw);
+  if (!parsed) throw new Error('vision returned non-JSON output');
+  return parsed;
+}
+
 function normaliseMime(m) {
   const v = String(m || '').toLowerCase();
   if (v.includes('png')) return 'image/png';

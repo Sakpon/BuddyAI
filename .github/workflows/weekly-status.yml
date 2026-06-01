@@ -1,0 +1,48 @@
+name: Weekly goal status
+
+on:
+  schedule:
+    # Sunday 13:00 UTC = 20:00 Asia/Bangkok — end of the week, after most
+    # markets have closed and before the new week starts. Once per ISO week
+    # is enforced server-side via the bangkokWeekToken throttle.
+    - cron: '0 13 * * 0'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Bypass the once-per-week throttle (for testing)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sanity-check secrets
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          CRON_KEY: ${{ secrets.CRON_KEY }}
+        run: |
+          set -eu
+          : "${WORKER_URL:?repo variable WORKER_URL missing}"
+          : "${CRON_KEY:?repo secret CRON_KEY missing}"
+          echo "ready"
+
+      - name: Trigger /test-weekly-status on the worker
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          CRON_KEY: ${{ secrets.CRON_KEY }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          qs=""
+          if [ "${FORCE:-false}" = "true" ]; then qs="?force=1"; fi
+          code=$(curl -sS -o /tmp/body -w "%{http_code}" \
+            -H "Authorization: Bearer $CRON_KEY" \
+            "${WORKER_URL%/}/test-weekly-status${qs}")
+          echo "HTTP $code"
+          cat /tmp/body
+          echo
+          [ "$code" = "200" ]

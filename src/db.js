@@ -979,6 +979,27 @@ export async function getContributionsByClass(env, userId, goalId) {
   return map;
 }
 
+// Sum of this-calendar-month's contributions, in Asia/Bangkok. Used by the
+// weekly status digest to flag "DCA เดือนนี้ยังไม่ครบ" without scanning
+// every contribution row in JS.
+export async function getContributionsThisMonth(env, userId, goalId, now = new Date()) {
+  if (!goalId) return 0;
+  // Compute Bangkok month-start as a unix timestamp.
+  const bkkMs = now.getTime() + 7 * 60 * 60 * 1000;
+  const bkk = new Date(bkkMs);
+  const monthStartBkkMs = Date.UTC(bkk.getUTCFullYear(), bkk.getUTCMonth(), 1);
+  const monthStartUnix = Math.floor((monthStartBkkMs - 7 * 60 * 60 * 1000) / 1000);
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(SUM(amount_thb), 0) AS total
+       FROM contributions
+      WHERE user_id = ? AND goal_id = ?
+        AND contributed_at >= ?`,
+  )
+    .bind(userId, goalId, monthStartUnix)
+    .first();
+  return Number(row?.total || 0);
+}
+
 // Recent contributions feed — most-recent N for the goal card and journey.
 export async function listContributions(env, userId, goalId, limit = 12) {
   const { results } = await env.DB.prepare(

@@ -136,6 +136,40 @@ export async function markDcaSent(env, key) {
   await env.SESSION_KV.put(key, String(Date.now()), { expirationTtl: DCA_THROTTLE_SECONDS });
 }
 
+// Bangkok ISO-8601 week token "YYYY-WW" — used as the weekly status
+// throttle key so each user receives at most one weekly digest per ISO week.
+export function bangkokWeekToken(now = new Date()) {
+  const bkkMs = now.getTime() + 7 * 60 * 60 * 1000;
+  const d = new Date(bkkMs);
+  // ISO week: Thursday-of-week defines the year + week number.
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+}
+
+// Range strings for the digest header.
+export function bangkokWeekRange(now = new Date()) {
+  const bkkMs = now.getTime() + 7 * 60 * 60 * 1000;
+  const d = new Date(bkkMs);
+  d.setUTCHours(0, 0, 0, 0);
+  // Sunday-start week (the cron runs on Sunday, so "this week" reads as
+  // Sun → Sat for most users).
+  const dow = d.getUTCDay(); // 0=Sun
+  const sunday = new Date(d);
+  sunday.setUTCDate(d.getUTCDate() - dow);
+  const saturday = new Date(sunday);
+  saturday.setUTCDate(sunday.getUTCDate() + 6);
+  return { startIso: sunday.toISOString(), endIso: saturday.toISOString() };
+}
+
+export const WEEKLY_STATUS_THROTTLE_SECONDS = 60 * 60 * 24 * 14;
+
+export async function markWeeklySent(env, key) {
+  await env.SESSION_KV.put(key, String(Date.now()), { expirationTtl: WEEKLY_STATUS_THROTTLE_SECONDS });
+}
+
 // Human-readable label for an asset class (defensive: falls back to the
 // raw class string if the taxonomy doesn't know about it).
 export function classLabel(cls) {

@@ -223,6 +223,50 @@ export function goalEditMenuCard({ goal }) {
             'edit-allocation',
             '#D97706',
           ),
+          // Open the DCA schedule view — for per-month overrides like
+          // bonus months. Uses a message action so it goes through the
+          // existing "ตาราง dca" command path instead of needing a new
+          // postback handler.
+          {
+            type: 'box',
+            layout: 'vertical',
+            paddingAll: '10px',
+            cornerRadius: '8px',
+            backgroundColor: '#F8FAFC',
+            spacing: 'xs',
+            margin: 'sm',
+            contents: [
+              {
+                type: 'box',
+                layout: 'horizontal',
+                spacing: 'sm',
+                contents: [
+                  { type: 'text', text: '📆', size: 'md', flex: 0 },
+                  {
+                    type: 'text',
+                    text: 'ตารางการเติม DCA',
+                    size: 'sm',
+                    weight: 'bold',
+                    color: '#0F172A',
+                    flex: 5,
+                    gravity: 'center',
+                  },
+                ],
+              },
+              { type: 'text', text: 'ตั้งยอด DCA เฉพาะบางเดือน เช่น เดือนโบนัส', size: 'xxs', color: '#475569' },
+              {
+                type: 'button',
+                style: 'secondary',
+                height: 'sm',
+                margin: 'sm',
+                action: {
+                  type: 'message',
+                  label: 'เปิดตาราง DCA',
+                  text: 'ตาราง dca',
+                },
+              },
+            ],
+          },
         ],
       },
       footer: {
@@ -289,6 +333,153 @@ function editFieldRow(emoji, title, current, postbackField, accentColor) {
       },
     ],
   };
+}
+
+// "ตารางการเติม DCA" — shows standing monthly + any per-month overrides.
+// Each override row carries a "ลบ" delete button for one-tap removal.
+export function dcaOverridesCard({ goal, overrides, currentYm }) {
+  const standing = Number(goal.monthlyContributionThb) || 0;
+  const upcoming = (overrides || []).filter((o) => o.year_month >= currentYm).slice(0, 8);
+  const past = (overrides || []).filter((o) => o.year_month < currentYm).slice(0, 4);
+
+  const body = [
+    {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#0EA5E912',
+      cornerRadius: '10px',
+      paddingAll: '14px',
+      spacing: 'xs',
+      contents: [
+        { type: 'text', text: 'DCA มาตรฐานต่อเดือน', size: 'xs', color: '#475569' },
+        { type: 'text', text: fmtThb(standing) + ' บาท', size: 'xxl', weight: 'bold', color: '#0F172A' },
+        { type: 'text', text: 'ใช้กับทุกเดือนที่ไม่ได้ตั้งค่า override', size: 'xxs', color: '#94A3B8' },
+      ],
+    },
+  ];
+
+  if (upcoming.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'เดือนที่ปรับไว้แล้ว', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    for (const o of upcoming) body.push(overrideRow(o, standing));
+  }
+
+  if (past.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({ type: 'text', text: 'ผ่านมาแล้ว', weight: 'bold', size: 'sm', color: '#94A3B8', margin: 'md' });
+    for (const o of past) body.push(overrideRow(o, standing, true));
+  }
+
+  if (!upcoming.length && !past.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push({
+      type: 'text',
+      text: '— ยังไม่มี override เดือนไหน —',
+      size: 'sm',
+      color: '#94A3B8',
+      align: 'center',
+    });
+  }
+
+  return {
+    type: 'flex',
+    altText: 'ตารางการเติม DCA',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: heroBand('📆 ตารางการเติม DCA', 'ปรับยอดเฉพาะบางเดือน เช่น เดือนโบนัส'),
+      body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'text',
+            text: 'พิมพ์ "ปรับ DCA <จำนวน> <YYYY-MM>" เพื่อตั้ง override เช่น "ปรับ DCA 80000 2026-06"',
+            size: 'xxs',
+            color: '#94A3B8',
+            wrap: true,
+            align: 'center',
+          },
+          {
+            type: 'text',
+            text: 'พิมพ์ "ลบ DCA <YYYY-MM>" เพื่อยกเลิก override',
+            size: 'xxs',
+            color: '#94A3B8',
+            wrap: true,
+            align: 'center',
+          },
+        ],
+      },
+    },
+  };
+}
+
+function overrideRow(o, standing, isPast = false) {
+  const amount = Number(o.amount_thb) || 0;
+  const diff = amount - standing;
+  const diffColor = diff > 0 ? '#16A34A' : diff < 0 ? '#DC2626' : '#475569';
+  const diffText = diff !== 0
+    ? `${diff > 0 ? '+' : ''}${fmtThb(diff)}`
+    : 'เท่ามาตรฐาน';
+  return {
+    type: 'box',
+    layout: 'vertical',
+    paddingAll: '8px',
+    cornerRadius: '6px',
+    backgroundColor: isPast ? '#F1F5F9' : '#F8FAFC',
+    spacing: 'xs',
+    margin: 'sm',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: formatYearMonthThai(o.year_month), size: 'sm', weight: 'bold', color: isPast ? '#94A3B8' : '#0F172A', flex: 4 },
+          {
+            type: 'text',
+            text: fmtThb(amount) + ' บาท',
+            size: 'sm',
+            weight: 'bold',
+            color: isPast ? '#94A3B8' : '#0F172A',
+            align: 'end',
+            flex: 4,
+          },
+        ],
+      },
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: diffText, size: 'xxs', color: isPast ? '#94A3B8' : diffColor, flex: 4 },
+          ...(isPast
+            ? []
+            : [{
+                type: 'button',
+                style: 'secondary',
+                height: 'sm',
+                flex: 3,
+                action: {
+                  type: 'postback',
+                  label: 'ลบ override',
+                  data: `action=goal-delete-dca-override&ym=${o.year_month}`,
+                  displayText: `ลบ override ${o.year_month}`,
+                },
+              }]),
+        ],
+      },
+    ],
+  };
+}
+
+function formatYearMonthThai(ym) {
+  const m = String(ym || '').match(/^(\d{4})-(\d{2})$/);
+  if (!m) return ym;
+  const [, year, mo] = m;
+  const monthNames = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+  const idx = Number(mo) - 1;
+  if (idx < 0 || idx >= 12) return ym;
+  return `${monthNames[idx]} ${year}`;
 }
 
 function allocationSummary(allocation) {

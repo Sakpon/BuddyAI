@@ -144,8 +144,8 @@ const HELP_TH = [
   '• "ติด <SYM> <ประเภท>" — ติดป้ายประเภทสินทรัพย์ (thai_equity, global_etf, thai_fund, cash, hk_equity, crypto)',
   '• "ตั้งเป้าหมาย" — ตั้งเป้าความมั่งคั่งระยะยาวพร้อมแผน DCA',
   '• "เป้าหมาย" / "goal" — ดูเป้าหมายและความก้าวหน้า',
-  '• "ปรับเป้าหมาย" — เมนูแก้ไขเป้าหมาย (ยอด/ปี/ผลตอบแทน/สัดส่วน)',
-  '• "ปรับเป้า <จำนวน>" / "ปรับปี <year>" / "ปรับผลตอบแทน <%>" / "ปรับสัดส่วน <a b c>" — แก้ทีละช่อง',
+  '• "ปรับเป้าหมาย" — เมนูแก้ไขเป้าหมาย (ยอด/ปี/ผลตอบแทน/DCA/สัดส่วน)',
+  '• "ปรับเป้า <จำนวน>" / "ปรับปี <year>" / "ปรับผลตอบแทน <%>" / "ปรับ DCA <จำนวน>" / "ปรับสัดส่วน <a b c>" — แก้ทีละช่อง',
   '• "เติม <จำนวน> [<ประเภท>]" — บันทึก DCA เช่น "เติม 30000" หรือ "เติม 30K thai_equity"',
   '• "ปันผล <SYM> <จำนวน>" — บันทึกปันผลที่ได้รับ (หรือ "ปันผล PTT 2.15 1000" สำหรับ ต่อหุ้น × จำนวน)',
   '• "รายการปันผล" — ดูปันผลที่บันทึกไว้ + ยอดสะสมปีนี้',
@@ -1329,6 +1329,8 @@ function matchCommand(text) {
   if (editReturn) return { cmd: 'goal-edit-field', arg: { field: 'return', raw: editReturn[1].trim() } };
   const editAlloc = t.match(/^(?:ปรับสัดส่วน|edit allocation)\s+(.+)$/i);
   if (editAlloc) return { cmd: 'goal-edit-field', arg: { field: 'allocation', raw: editAlloc[1].trim() } };
+  const editDca = t.match(/^(?:ปรับ\s?dca|ปรับเงินเติม|edit dca|edit monthly)\s+(.+)$/i);
+  if (editDca) return { cmd: 'goal-edit-field', arg: { field: 'dca', raw: editDca[1].trim() } };
 
   // เติม <amount> [<class>]   →  log a DCA contribution
   //   เติม 30000              → split per goal allocation
@@ -1919,6 +1921,10 @@ const EDIT_FIELD_PROMPTS = {
     title: '📈 ปรับสมมุติผลตอบแทน',
     subtitle: 'พิมพ์ % ต่อปี เช่น "7.5"',
   },
+  dca: {
+    title: '💸 ปรับ DCA / เดือน',
+    subtitle: 'พิมพ์จำนวนเงินต่อเดือนเอง เช่น "30000" หรือ "30K" — บอท จะใช้ตัวเลขนี้แทนค่าที่คำนวณจากเป้าหมาย',
+  },
   allocation: {
     title: '🎯 ปรับสัดส่วนการลงทุน',
     subtitle: 'พิมพ์ 3 ตัวเลขรวม 100 (หุ้นไทย / ETF ตปท / เงินสด) เช่น "70 20 10"',
@@ -2016,6 +2022,21 @@ async function applyGoalFieldEdit(ev, env, userId, arg) {
     parsedValue = pct;
     humanValue = `${Number(pct).toFixed(1)}% / ปี`;
     patch = { expectedReturnPct: pct };
+  } else if (field === 'dca') {
+    // Manual DCA override — bypasses the PMT back-solver. The user is
+    // saying "I'll contribute this much per month, accept the gap".
+    // We don't reconcile it with target/horizon — if they're inconsistent,
+    // the goal card's status badge (🟢🟡🔴) will surface that as lagging.
+    const dca = parseAmount(raw);
+    if (!Number.isFinite(dca) || dca <= 0) {
+      return replyEditError(ev, env, 'จำนวน DCA ไม่ถูกต้อง', 'dca');
+    }
+    if (dca > 10_000_000) {
+      return replyEditError(ev, env, 'จำนวน DCA สูงเกินไป', 'dca');
+    }
+    parsedValue = dca;
+    humanValue = `${dca.toLocaleString('en-US')} บาท / เดือน`;
+    patch = { monthlyContributionThb: dca };
   } else if (field === 'allocation') {
     const alloc = parseAllocation(raw);
     const err = alloc ? validateAllocation(alloc) : 'อ่านสัดส่วนไม่ออก';

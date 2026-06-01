@@ -201,7 +201,8 @@ test message) are tracked as a follow-up.
 | `ติด <SYM> <class>` / `tag <SYM> <class>` | Override the inferred asset class for a symbol across every portfolio. Valid classes: `thai_equity`, `global_etf`, `thai_fund`, `hk_equity`, `cash`, `crypto`, `other`. |
 | `ตั้งเป้าหมาย` / `set goal` | **AIWealthOS Phase 1.2** — start the 3-step goal wizard (target amount → horizon → allocation). Back-solves the monthly DCA via PMT formula and shows a confirmation card. Saves as the user's single active goal. |
 | `เป้าหมาย` / `goal` | Show the active goal: progress vs target, glidepath status (🟢🟡🔴), DCA adherence %, allocation targets. Goal card carries a "✏️ ปรับเป้าหมาย" button → opens the edit menu. |
-| `ปรับเป้าหมาย` / `edit goal` | Edit menu card with 4 fields: ยอด / ปี / ผลตอบแทน / สัดส่วน. Tap a button → one-step wizard. Amount/year/return changes auto-recompute the monthly DCA via the PMT formula. |
+| `ปรับเป้าหมาย` / `edit goal` | Edit menu card with **5 fields**: ยอด / ปี / ผลตอบแทน / **DCA** / สัดส่วน. Tap a button → one-step wizard. Amount/year/return changes auto-recompute the monthly DCA via the PMT formula; DCA edits are a manual override (bypass the back-solver). |
+| `ปรับ DCA <amount>` / `edit dca <amount>` / `edit monthly <amount>` | Text shortcut — manual DCA override. Replaces the back-solved monthly contribution with the value you type. Useful when you can only afford a fixed amount regardless of target math. The goal-card status badge will surface any resulting gap. |
 | `ปรับเป้า <amount>` / `edit target <amount>` | Text shortcut — patch target amount in place. |
 | `ปรับปี <year>` / `edit year <year>` | Text shortcut — patch target year (accepts "15" as years from now or "2045" as absolute). |
 | `ปรับผลตอบแทน <pct>` / `edit return <pct>` | Text shortcut — patch expected annual return %. |

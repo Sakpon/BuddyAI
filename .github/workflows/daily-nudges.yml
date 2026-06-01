@@ -1,0 +1,49 @@
+name: Daily wealth nudges
+
+on:
+  schedule:
+    # 02:30 UTC = 09:30 Asia/Bangkok, daily.
+    # 30 minutes after the morning stock-alert cron so users don't get
+    # everything at once. DCA reminder fires only on the 1st of each month
+    # (server-side filter in evaluateUserNudges).
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Bypass throttles (drift + DCA fire regardless of last-sent timestamp)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sanity-check secrets
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          CRON_KEY: ${{ secrets.CRON_KEY }}
+        run: |
+          set -eu
+          : "${WORKER_URL:?repo variable WORKER_URL missing (e.g. https://buddyai.sakpongun.workers.dev)}"
+          : "${CRON_KEY:?repo secret CRON_KEY missing — same value as the wrangler secret}"
+          echo "ready"
+
+      - name: Trigger /test-nudges on the worker
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          CRON_KEY: ${{ secrets.CRON_KEY }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          qs=""
+          if [ "${FORCE:-false}" = "true" ]; then qs="?force=1"; fi
+          code=$(curl -sS -o /tmp/body -w "%{http_code}" \
+            -H "Authorization: Bearer $CRON_KEY" \
+            "${WORKER_URL%/}/test-nudges${qs}")
+          echo "HTTP $code"
+          cat /tmp/body
+          echo
+          [ "$code" = "200" ]

@@ -1042,6 +1042,87 @@ export async function clearActiveGoal(env, userId) {
   return (meta?.changes || 0) > 0;
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Per-month DCA overrides (Phase 1.2 follow-on)
+//
+// The goal carries a single standing monthly DCA. Overrides let the user
+// say "this specific month, my DCA is different" — e.g. bonus month at
+// ฿80K instead of the usual ฿30K. The nudge cron + the goal-log-monthly
+// postback both read from this table when picking the amount to suggest.
+// ────────────────────────────────────────────────────────────────────────
+
+export async function setDcaOverride(env, userId, goalId, yearMonth, amountThb, notes = null) {
+  const ym = String(yearMonth || '').trim();
+  const amt = Number(amountThb);
+  if (!ym.match(/^\d{4}-\d{2}$/)) return { ok: false, error: 'invalid_year_month' };
+  if (!Number.isFinite(amt) || amt <= 0) return { ok: false, error: 'invalid_amount' };
+  // SQLite-flavored upsert — keeps a single row per (user, goal, month).
+  await env.DB.prepare(
+    `INSERT INTO dca_overrides (user_id, goal_id, year_month, amount_thb, notes)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, goal_id, year_month)
+     DO UPDATE SET amount_thb = excluded.amount_thb,
+                   notes = excluded.notes,
+                   updated_at = unixepoch()`,
+  )
+    .bind(userId, goalId, ym, amt, notes)
+    .run();
+  return { ok: true, year_month: ym, amount_thb: amt };
+}
+
+export async function getDcaOverride(env, userId, goalId, yearMonth) {
+  if (!goalId || !yearMonth) return null;
+  const row = await env.DB.prepare(
+    `SELECT id, year_month, amount_thb, notes, updated_at
+       FROM dca_overrides
+      WHERE user_id = ? AND goal_id = ? AND year_month = ?
+      LIMIT 1`,
+  )
+    .bind(userId, goalId, yearMonth)
+    .first();
+  if (!row) return null;
+  return {
+    id: row.id,
+    year_month: row.year_month,
+    amount_thb: Number(row.amount_thb),
+    notes: row.notes,
+    updated_at: row.updated_at,
+  };
+}
+
+// Future-first list — overrides for upcoming months at the top, then past
+// months. Useful for the dcaOverridesCard ("ตารางการเติม DCA").
+export async function listDcaOverrides(env, userId, goalId, limit = 24) {
+  if (!goalId) return [];
+  const { results } = await env.DB.prepare(
+    `SELECT id, year_month, amount_thb, notes, updated_at
+       FROM dca_overrides
+      WHERE user_id = ? AND goal_id = ?
+      ORDER BY year_month DESC, id DESC
+      LIMIT ?`,
+  )
+    .bind(userId, goalId, limit)
+    .all();
+  return (results || []).map((r) => ({
+    id: r.id,
+    year_month: r.year_month,
+    amount_thb: Number(r.amount_thb),
+    notes: r.notes,
+    updated_at: r.updated_at,
+  }));
+}
+
+export async function deleteDcaOverride(env, userId, goalId, yearMonth) {
+  if (!goalId || !yearMonth) return { ok: false, error: 'invalid_input' };
+  const { meta } = await env.DB.prepare(
+    `DELETE FROM dca_overrides
+      WHERE user_id = ? AND goal_id = ? AND year_month = ?`,
+  )
+    .bind(userId, goalId, yearMonth)
+    .run();
+  return { ok: true, deleted: (meta?.changes || 0) > 0 };
+}
+
 // Partial in-place edit of the active goal. Accepts any subset of:
 //   { targetAmountThb, targetYear, expectedReturnPct, allocationTargets,
 //     monthlyContributionThb }

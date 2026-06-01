@@ -203,6 +203,9 @@ test message) are tracked as a follow-up.
 | `เป้าหมาย` / `goal` | Show the active goal: progress vs target, glidepath status (🟢🟡🔴), DCA adherence %, allocation targets. Goal card carries a "✏️ ปรับเป้าหมาย" button → opens the edit menu. |
 | `ปรับเป้าหมาย` / `edit goal` | Edit menu card with **5 fields**: ยอด / ปี / ผลตอบแทน / **DCA** / สัดส่วน. Tap a button → one-step wizard. Amount/year/return changes auto-recompute the monthly DCA via the PMT formula; DCA edits are a manual override (bypass the back-solver). |
 | `ปรับ DCA <amount>` / `edit dca <amount>` / `edit monthly <amount>` | Text shortcut — manual DCA override. Replaces the back-solved monthly contribution with the value you type. Useful when you can only afford a fixed amount regardless of target math. The goal-card status badge will surface any resulting gap. |
+| `ปรับ DCA <amount> <YYYY-MM>` / `edit dca <amount> <YYYY-MM>` | **Per-month override** — set a different DCA for one specific calendar month (e.g. `ปรับ DCA 80000 2026-06` for a bonus month). The standing monthly stays unchanged; only that month uses the override. The DCA reminder cron + the goal-log-monthly button both consult this table. |
+| `ตาราง dca` / `ดู dca` / `รายการ dca` | Open the DCA schedule card — shows the standing monthly + every per-month override (upcoming first, then past). Each upcoming override row has a one-tap "ลบ" button. |
+| `ลบ DCA <YYYY-MM>` / `delete dca <YYYY-MM>` | Remove a per-month override — that month reverts to the standing monthly DCA. |
 | `ปรับเป้า <amount>` / `edit target <amount>` | Text shortcut — patch target amount in place. |
 | `ปรับปี <year>` / `edit year <year>` | Text shortcut — patch target year (accepts "15" as years from now or "2045" as absolute). |
 | `ปรับผลตอบแทน <pct>` / `edit return <pct>` | Text shortcut — patch expected annual return %. |

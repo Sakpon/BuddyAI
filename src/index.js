@@ -1988,21 +1988,37 @@ async function showGoal(ev, env, userId) {
     0,
     Math.round((Date.UTC(goal.targetYear, 0, 1) - Date.now()) / (1000 * 60 * 60 * 24 * 30.4375)),
   );
+  // Always build the comparison object — for brand-new goals (monthsElapsed
+  // === 0) the history-dependent fields (implied return, actual avg DCA) are
+  // null and the card renders the rows we CAN compute. Most useful for a
+  // fresh goal: the projected reach year given existing net worth + the
+  // planned DCA, which often differs from the planned target year because
+  // the user already has savings to count toward the goal.
   let comparison = null;
-  if (monthsElapsed > 0) {
+  if (goal && Number.isFinite(Number(goal.targetAmountThb))) {
     const actualAvgMonthlyDca = monthsElapsed > 0
       ? (Number(contributionsTotalThb) || 0) / monthsElapsed
       : null;
-    const impliedReturn = impliedAnnualReturnPct({
-      startValue: 0,
-      contributionsTotal: contributionsTotalThb,
-      currentValue: netWorth.total_thb,
-      monthsElapsed,
-    });
+    const impliedReturn = monthsElapsed > 0 && Number(contributionsTotalThb) > 0
+      ? impliedAnnualReturnPct({
+          startValue: 0,
+          contributionsTotal: contributionsTotalThb,
+          currentValue: netWorth.total_thb,
+          monthsElapsed,
+        })
+      : null;
+    // For the projection, use actual pace when we have it; otherwise the
+    // planned monthly. Same fallback story for the return assumption.
+    const monthlyForProjection = actualAvgMonthlyDca && actualAvgMonthlyDca > 0
+      ? actualAvgMonthlyDca
+      : Number(goal.monthlyContributionThb);
+    const returnForProjection = impliedReturn != null
+      ? impliedReturn
+      : Number(goal.expectedReturnPct);
     const monthsToReach = monthsToTarget({
       currentValue: netWorth.total_thb,
-      monthlyContribution: actualAvgMonthlyDca || goal.monthlyContributionThb,
-      expectedReturnPct: impliedReturn != null ? impliedReturn : goal.expectedReturnPct,
+      monthlyContribution: monthlyForProjection,
+      expectedReturnPct: returnForProjection,
       targetAmount: goal.targetAmountThb,
     });
     const projectedReachYear = monthsToReach != null
@@ -2022,7 +2038,7 @@ async function showGoal(ev, env, userId) {
     const requiredReturnPctToHit = monthsRemaining > 0
       ? requiredAnnualReturnPct({
           currentValue: netWorth.total_thb,
-          monthlyContribution: actualAvgMonthlyDca || goal.monthlyContributionThb,
+          monthlyContribution: monthlyForProjection,
           targetAmount: goal.targetAmountThb,
           monthsRemaining,
         })
@@ -2038,6 +2054,9 @@ async function showGoal(ev, env, userId) {
       yearsBehind: projectedReachYear != null ? yearsBehind : Number.POSITIVE_INFINITY,
       requiredMonthlyToHit,
       requiredReturnPctToHit,
+      // Flag so the Flex side can title the panel appropriately when there's
+      // no history yet ("📊 ภาพรวมแผน" instead of "🔍 เปรียบเทียบแผน vs ทำจริง").
+      isNewGoal: monthsElapsed === 0,
     };
   }
 

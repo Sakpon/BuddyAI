@@ -665,15 +665,34 @@ function planRow(label, value, color) {
 //     requiredReturnPctToHit, // % needed if PMT stays as-is
 //   }
 function comparisonBlock(c, goal) {
+  // New-goal mode: no investment history yet, so the "vs ทำจริง" framing
+  // doesn't apply. Show the projection-only view with a different title
+  // and a softer subtitle so the user understands why the actual columns
+  // are missing.
+  const title = c.isNewGoal
+    ? '📊 ภาพรวมแผน · ตามเงินที่มีอยู่ตอนนี้'
+    : '🔍 เปรียบเทียบแผน vs ทำจริง';
+
   const items = [
     {
       type: 'text',
-      text: '🔍 เปรียบเทียบแผน vs ทำจริง',
+      text: title,
       weight: 'bold',
       size: 'sm',
       color: '#0F172A',
+      wrap: true,
     },
   ];
+
+  if (c.isNewGoal) {
+    items.push({
+      type: 'text',
+      text: 'ยังไม่มีประวัติเติม DCA — บอท คาดการณ์จากเงินที่คุณมีอยู่ ณ ตอนนี้ + DCA ที่วางแผนไว้',
+      wrap: true,
+      size: 'xxs',
+      color: '#475569',
+    });
+  }
 
   // Return %
   if (c.impliedReturnPct != null) {
@@ -720,6 +739,7 @@ function comparisonBlock(c, goal) {
       c.projectedReachYear === Infinity ? 'ไม่ถึง' : String(c.projectedReachYear),
       trailLabel,
       tone,
+      c.isNewGoal ? 'คาดการณ์' : 'ทำได้',
     ));
   } else if (c.projectedReachYear === null) {
     items.push({
@@ -773,7 +793,7 @@ function comparisonBlock(c, goal) {
   return items;
 }
 
-function compareRow(label, planValue, actualValue, deltaText, color) {
+function compareRow(label, planValue, actualValue, deltaText, color, actualLabel = 'ทำได้') {
   return {
     type: 'box',
     layout: 'vertical',
@@ -785,7 +805,7 @@ function compareRow(label, planValue, actualValue, deltaText, color) {
         layout: 'horizontal',
         contents: [
           { type: 'text', text: `แผน ${planValue}`, size: 'xs', color: '#94A3B8', flex: 3 },
-          { type: 'text', text: `ทำได้ ${actualValue}`, size: 'xs', weight: 'bold', color: '#0F172A', align: 'center', flex: 3 },
+          { type: 'text', text: `${actualLabel} ${actualValue}`, size: 'xs', weight: 'bold', color: '#0F172A', align: 'center', flex: 3 },
           { type: 'text', text: deltaText, size: 'xs', weight: 'bold', color: color || '#475569', align: 'end', flex: 2 },
         ],
       },

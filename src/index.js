@@ -51,6 +51,7 @@ import {
   upsertUser,
 } from './db.js';
 import { enrollmentCard } from './flex/enrollment.js';
+import { postSaveGoalNudgeCard, welcomeDemoCard, welcomeWealthOSCard } from './flex/welcome.js';
 import { dailyAlertCard } from './flex/dailyAlert.js';
 import { dailyNewsCard } from './flex/news.js';
 import { oilLiffCard, stockLiffCard } from './flex/liffCards.js';
@@ -291,13 +292,12 @@ async function handleFollow(ev, env, userId) {
     pictureUrl: profile?.pictureUrl || null,
   });
   await logEvent(env, userId, 'follow', { displayName: profile?.displayName || null });
-  await reply(env, ev.replyToken, [
-    textMsg(
-      `ยินดีต้อนรับสู่ FinBot! ${profile?.displayName || ''}\n` +
-      'ส่งภาพหน้าจอพอร์ตของคุณเพื่อเริ่มต้น หรือพิมพ์ /help เพื่อดูคำสั่งทั้งหมด',
-    ),
-    enrollmentCard(),
-  ]);
+  // WealthOS-themed welcome: three-step orientation aligned with the deck's
+  // SEE / PLAN / ACT structure, replacing the older alert-subscription
+  // enrollment card.
+  await reply(env, ev.replyToken, welcomeWealthOSCard({
+    displayName: profile?.displayName || null,
+  }));
 }
 
 async function handlePostback(ev, env, userId) {
@@ -338,6 +338,18 @@ async function handlePostback(ev, env, userId) {
       total_value: saved?.portfolio?.total_value ?? null,
       symbols: (saved?.holdings || []).map((h) => h.symbol),
     });
+
+    // If the user doesn't yet have an active goal, surface a richer
+    // "next-step" card pointing at the goal wizard — closes the wealth-OS
+    // loop. Otherwise keep the existing minimal ack so we don't pester
+    // returning users who already set their plan.
+    const existingGoal = await getActiveGoal(env, userId).catch(() => null);
+    if (!existingGoal) {
+      return reply(env, ev.replyToken, postSaveGoalNudgeCard({
+        portfolioName: saved?.portfolio?.name || 'พอร์ต',
+        holdingCount: (saved?.holdings || []).length,
+      }));
+    }
     return reply(env, ev.replyToken, actionAckCard({
       title: `บันทึก "${saved?.portfolio?.name || 'พอร์ต'}" แล้ว`,
       subtitle: 'ตั้งเป็นพอร์ตที่ใช้งานปัจจุบันแล้ว',
@@ -346,7 +358,7 @@ async function handlePostback(ev, env, userId) {
         ...(saved?.portfolio?.total_value != null
           ? [{ label: 'มูลค่ารวม', value: Number(saved.portfolio.total_value).toLocaleString('en-US') }]
           : []),
-        { text: 'พิมพ์ "วิเคราะห์พอร์ต" หรือ "ปรับพอร์ต" เพื่อต่อ', color: '#475569' },
+        { text: 'พิมพ์ "ความมั่งคั่ง" เพื่อดูสรุปทรัพย์สิน หรือ "เป้าหมาย" เพื่อดูแผน DCA', color: '#475569' },
       ],
     }));
   }
@@ -448,6 +460,10 @@ async function handlePostback(ev, env, userId) {
   }
   if (action === 'goal-log-monthly') {
     return logGoalMonthlyContribution(ev, env, userId);
+  }
+
+  if (action === 'welcome-demo') {
+    return reply(env, ev.replyToken, welcomeDemoCard());
   }
 
   if (action === 'list-transactions') {
@@ -1452,14 +1468,18 @@ async function showNetWorth(ev, env, userId) {
   // exits early on subsequent calls because the inferred class already matches.
   await backfillAssetClasses(env, userId, inferAssetClass).catch(() => {});
 
-  const netWorth = await getNetWorth(env, userId);
+  const [netWorth, goal] = await Promise.all([
+    getNetWorth(env, userId),
+    getActiveGoal(env, userId).catch(() => null),
+  ]);
   await logEvent(env, userId, 'net_worth_viewed', {
     total_thb: Math.round(netWorth.total_thb || 0),
     class_count: (netWorth.breakdown || []).length,
     portfolio_count: (netWorth.portfolios || []).length,
     fx_fetched_at: netWorth.fx_fetched_at,
+    has_goal: !!goal,
   });
-  return reply(env, ev.replyToken, netWorthCard({ netWorth }));
+  return reply(env, ev.replyToken, netWorthCard({ netWorth, hasGoal: !!goal }));
 }
 
 async function tagAssetClassHandler(ev, env, userId, arg) {

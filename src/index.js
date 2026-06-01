@@ -9,13 +9,17 @@ import {
 } from './claude.js';
 import {
   applyPendingTransactions,
+  clearActiveGoal,
   clearHistory,
   clearPortfolios,
   confirmPendingPortfolio,
   deletePendingPortfolio,
   deletePendingTransactions,
   deletePortfolioById,
+  getActiveGoal,
   getActivePortfolio,
+  getContributionsByClass,
+  getContributionsTotal,
   getHistory,
   getJourney,
   getNewsSubscribedUsers,
@@ -25,12 +29,15 @@ import {
   getPortfolioWithHoldings,
   getSubscribedUsers,
   getTradingDiary,
+  listContributions,
   listPortfolios,
   listTransactions,
   logEvent,
   recordBuy,
+  recordContribution,
   recordSell,
   renamePortfolio,
+  saveGoal,
   savePendingPortfolio,
   savePendingTransactions,
   saveMessage,
@@ -81,6 +88,21 @@ import { fetchAndStoreFxRates } from './fx.js';
 import { backfillAssetClasses, getNetWorth, tagSymbolClass } from './wealth.js';
 import { inferAssetClass, isValidClass, ASSET_CLASSES } from './assetclass.js';
 import { netWorthCard } from './flex/wealth.js';
+import {
+  DEFAULT_ALLOCATION,
+  DEFAULT_EXPECTED_RETURN_PCT,
+  expectedFutureValue,
+  monthsUntil,
+  parseAllocation,
+  parseAmount,
+  parseHorizon,
+  solveMonthlyContribution,
+  validateAllocation,
+  validateExpectedReturn,
+  validateTargetAmount,
+  validateTargetYear,
+} from './goals.js';
+import { goalCard, goalConfirmCard } from './flex/goal.js';
 import { adminPage } from './admin/page.js';
 import {
   adminApiCronLogs,
@@ -96,6 +118,10 @@ const HELP_TH = [
   '• ส่งภาพรายการซื้อขาย (เช่น SCB Easy Activity) — ระบบจะอ่านและให้กดยืนยันนำเข้า',
   '• "ความมั่งคั่ง" / "net worth" — สรุปความมั่งคั่งสุทธิรวมทุกพอร์ตเป็นเงินบาท',
   '• "ติด <SYM> <ประเภท>" — ติดป้ายประเภทสินทรัพย์ (thai_equity, global_etf, thai_fund, cash, hk_equity, crypto)',
+  '• "ตั้งเป้าหมาย" — ตั้งเป้าความมั่งคั่งระยะยาวพร้อมแผน DCA',
+  '• "เป้าหมาย" / "goal" — ดูเป้าหมายและความก้าวหน้า',
+  '• "เติม <จำนวน> [<ประเภท>]" — บันทึก DCA เช่น "เติม 30000" หรือ "เติม 30K thai_equity"',
+  '• "ลบเป้าหมาย" — ลบเป้าหมายปัจจุบัน',
   '• "พอร์ต" — ดูพอร์ตที่ใช้งานอยู่',
   '• "พอร์ตทั้งหมด" — รายการพอร์ตทั้งหมด เลือก/ลบได้',
   '• "เปลี่ยนชื่อ <ชื่อใหม่>" — เปลี่ยนชื่อพอร์ตที่ใช้งานอยู่',
@@ -409,6 +435,21 @@ async function handlePostback(ev, env, userId) {
     return showPortfolioHistory(ev, env, userId);
   }
 
+  if (action === 'confirm-goal') {
+    return confirmGoalFromWizard(ev, env, userId);
+  }
+  if (action === 'cancel-goal-wizard') {
+    await deleteGoalWizardState(env, userId);
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยกเลิกการตั้งเป้าหมายแล้ว',
+      subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อเริ่มใหม่ได้ทุกเมื่อ',
+    }));
+  }
+  if (action === 'goal-log-monthly') {
+    return logGoalMonthlyContribution(ev, env, userId);
+  }
+
   if (action === 'list-transactions') {
     return showTransactions(ev, env, userId);
   }
@@ -560,6 +601,19 @@ async function handleText(ev, env, userId, text) {
   const match = matchCommand(text);
   const cmd = match?.cmd;
 
+  // Goal-wizard interception: if user has an active wizard and didn't type
+  // a recognised command, treat the input as the answer to the current step.
+  // A recognised command silently cancels the wizard (the user clearly
+  // changed their mind).
+  const wizardState = await getGoalWizardState(env, userId);
+  if (wizardState && !cmd) {
+    return handleGoalWizardAnswer(ev, env, userId, text, wizardState);
+  }
+  if (wizardState && cmd) {
+    await deleteGoalWizardState(env, userId);
+    // fall through to the matched command
+  }
+
   if (cmd === 'help') {
     return reply(env, ev.replyToken, textMsg(HELP_TH));
   }
@@ -649,6 +703,18 @@ async function handleText(ev, env, userId, text) {
   }
   if (cmd === 'tag-asset-class') {
     return tagAssetClassHandler(ev, env, userId, match.arg);
+  }
+  if (cmd === 'goal-wizard-start') {
+    return startGoalWizard(ev, env, userId);
+  }
+  if (cmd === 'show-goal') {
+    return showGoal(ev, env, userId);
+  }
+  if (cmd === 'clear-goal') {
+    return clearGoalHandler(ev, env, userId);
+  }
+  if (cmd === 'contribute') {
+    return recordContributionHandler(ev, env, userId, match.arg);
   }
   if (cmd === 'rename-portfolio') {
     const newName = match.arg;
@@ -1153,6 +1219,32 @@ function matchCommand(text) {
     return { cmd: 'net-worth' };
   }
 
+  // AIWealthOS Phase 1.2 — goals + DCA
+  if (['ตั้งเป้าหมาย', 'เป้าหมายใหม่', 'set goal', 'new goal'].includes(tl)) {
+    return { cmd: 'goal-wizard-start' };
+  }
+  if (['เป้าหมาย', 'goal', 'plan'].includes(tl)) {
+    return { cmd: 'show-goal' };
+  }
+  if (['ลบเป้าหมาย', 'ยกเลิกเป้าหมาย', 'clear goal'].includes(tl)) {
+    return { cmd: 'clear-goal' };
+  }
+
+  // เติม <amount> [<class>]   →  log a DCA contribution
+  //   เติม 30000              → split per goal allocation
+  //   เติม 30000 thai_equity   → all into one class
+  //   เติม 30K global_etf      → with M/K suffix
+  const contribMatch = t.match(/^(เติม|dca|contribute)\s+([\d.,]+[MmKk]?)(?:\s+([a-z_]+))?$/i);
+  if (contribMatch) {
+    return {
+      cmd: 'contribute',
+      arg: {
+        amountRaw: contribMatch[2],
+        assetClass: contribMatch[3] ? contribMatch[3].toLowerCase() : null,
+      },
+    };
+  }
+
   // Asset class tagging: "ติด <SYM> <class>"
   //   ติด VOO global_etf      → tag VOO as global ETF
   //   ติด SCBGOLD thai_fund    → tag SCBGOLD as Thai mutual fund
@@ -1403,6 +1495,337 @@ async function tagAssetClassHandler(ev, env, userId, arg) {
     title: `ติดป้าย ${result.symbol} เป็น "${meta.label}" แล้ว`,
     subtitle: `${meta.emoji} อัพเดต ${result.changed} แถว`,
   }));
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// AIWealthOS Phase 1.2 — goal wizard + DCA contributions
+//
+// Wizard state lives in KV under `goal-wizard:<userId>` with a 30-min TTL.
+// Shape: { step: 'target' | 'horizon' | 'allocation' | 'return' | 'confirm',
+//          data: { targetAmountThb?, targetYear?, allocation?, expectedReturnPct? } }
+// ────────────────────────────────────────────────────────────────────────
+
+const GOAL_WIZARD_PREFIX = 'goal-wizard:';
+const GOAL_WIZARD_TTL = 60 * 30;
+
+async function getGoalWizardState(env, userId) {
+  const raw = await env.SESSION_KV.get(GOAL_WIZARD_PREFIX + userId);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+async function saveGoalWizardState(env, userId, state) {
+  await env.SESSION_KV.put(
+    GOAL_WIZARD_PREFIX + userId,
+    JSON.stringify(state),
+    { expirationTtl: GOAL_WIZARD_TTL },
+  );
+}
+
+async function deleteGoalWizardState(env, userId) {
+  await env.SESSION_KV.delete(GOAL_WIZARD_PREFIX + userId);
+}
+
+async function startGoalWizard(ev, env, userId) {
+  await upsertUser(env, { userId });
+  await saveGoalWizardState(env, userId, {
+    step: 'target',
+    data: {},
+  });
+  await logEvent(env, userId, 'goal_wizard_started', null);
+  return reply(env, ev.replyToken, actionAckCard({
+    tone: 'info',
+    title: '🎯 ตั้งเป้าหมายความมั่งคั่ง',
+    subtitle: 'อยากมีเงินเก็บกี่บาทในอนาคต?',
+    lines: [
+      { text: 'ตอบกลับด้วยจำนวนเงิน เช่น "20M" สำหรับ 20 ล้านบาท หรือ "5000000" สำหรับ 5 ล้านบาท', color: '#475569' },
+      { text: 'พิมพ์ "ยกเลิก" เพื่อหยุดการตั้งเป้า', color: '#94A3B8' },
+    ],
+  }));
+}
+
+async function handleGoalWizardAnswer(ev, env, userId, text, state) {
+  const trimmed = String(text || '').trim();
+
+  // Universal cancel
+  if (['ยกเลิก', 'cancel', 'หยุด', 'stop'].includes(trimmed.toLowerCase())) {
+    await deleteGoalWizardState(env, userId);
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยกเลิกการตั้งเป้าหมายแล้ว',
+    }));
+  }
+
+  if (state.step === 'target') {
+    const amount = parseAmount(trimmed);
+    const err = validateTargetAmount(amount);
+    if (err) {
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: err,
+        subtitle: 'ลองใหม่ เช่น "20M" หรือ "5000000"',
+      }));
+    }
+    state.data.targetAmountThb = amount;
+    state.step = 'horizon';
+    await saveGoalWizardState(env, userId, state);
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: `เป้า ${amount.toLocaleString('en-US')} บาท · ขั้นต่อไป`,
+      subtitle: 'ภายในกี่ปี? พิมพ์เลขปีที่ต้องการ เช่น "15" หรือพิมพ์ปีเป้า เช่น "2040"',
+    }));
+  }
+
+  if (state.step === 'horizon') {
+    const targetYear = parseHorizon(trimmed);
+    const err = validateTargetYear(targetYear);
+    if (err) {
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: err,
+        subtitle: 'ลองใหม่ เช่น "15" (ปี) หรือ "2040" (ปี ค.ศ.)',
+      }));
+    }
+    state.data.targetYear = targetYear;
+    state.step = 'allocation';
+    await saveGoalWizardState(env, userId, state);
+    const years = targetYear - new Date().getUTCFullYear();
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: `อีก ${years} ปี (ปี ${targetYear}) · ขั้นต่อไป`,
+      subtitle: 'จัดสัดส่วนการลงทุนยังไง?',
+      lines: [
+        { text: '• พิมพ์ "default" สำหรับ 60/30/10 (หุ้นไทย / ETF ต่างประเทศ / เงินสด)', color: '#475569' },
+        { text: '• หรือพิมพ์เอง 3 ตัวเลขรวม 100 เช่น "70 20 10"', color: '#475569' },
+      ],
+    }));
+  }
+
+  if (state.step === 'allocation') {
+    const alloc = parseAllocation(trimmed);
+    const err = alloc ? validateAllocation(alloc) : 'อ่านสัดส่วนไม่ออก';
+    if (err) {
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: err,
+        subtitle: 'ลองใหม่ เช่น "default" หรือ "60 30 10"',
+      }));
+    }
+    state.data.allocation = alloc;
+    // We could ask a 4th question for expected return, but for the wedge
+    // experience we use the default and let the user override later. Most
+    // users won't have a strong opinion here on first setup.
+    state.data.expectedReturnPct = DEFAULT_EXPECTED_RETURN_PCT;
+    state.step = 'confirm';
+    await saveGoalWizardState(env, userId, state);
+
+    const monthly = solveMonthlyContribution({
+      targetAmountThb: state.data.targetAmountThb,
+      targetYear: state.data.targetYear,
+      expectedReturnPct: state.data.expectedReturnPct,
+    });
+    state.data.monthlyContributionThb = monthly;
+    await saveGoalWizardState(env, userId, state);
+
+    return reply(env, ev.replyToken, goalConfirmCard({
+      targetAmountThb: state.data.targetAmountThb,
+      targetYear: state.data.targetYear,
+      expectedReturnPct: state.data.expectedReturnPct,
+      monthlyContributionThb: monthly,
+      allocation: state.data.allocation,
+    }));
+  }
+
+  if (state.step === 'confirm') {
+    // User typed something instead of tapping the button — nudge them.
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'แตะปุ่ม "บันทึกเป็นเป้าหมาย" เพื่อยืนยัน',
+      subtitle: 'หรือพิมพ์ "ยกเลิก" เพื่อตั้งใหม่',
+    }));
+  }
+
+  // Shouldn't reach here
+  await deleteGoalWizardState(env, userId);
+  return reply(env, ev.replyToken, actionAckCard({
+    tone: 'warning',
+    title: 'การตั้งเป้าหมายสะดุด — เริ่มใหม่ได้',
+    subtitle: 'พิมพ์ "ตั้งเป้าหมาย"',
+  }));
+}
+
+async function confirmGoalFromWizard(ev, env, userId) {
+  const state = await getGoalWizardState(env, userId);
+  if (!state || state.step !== 'confirm' || !state.data) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'warning',
+      title: 'หมดเวลายืนยัน',
+      subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อเริ่มใหม่',
+    }));
+  }
+  const result = await saveGoal(env, userId, {
+    targetAmountThb: state.data.targetAmountThb,
+    targetYear: state.data.targetYear,
+    expectedReturnPct: state.data.expectedReturnPct,
+    monthlyContributionThb: state.data.monthlyContributionThb,
+    allocationTargets: state.data.allocation,
+  });
+  if (!result.ok) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'warning',
+      title: 'บันทึกเป้าหมายไม่สำเร็จ',
+    }));
+  }
+  await deleteGoalWizardState(env, userId);
+  await logEvent(env, userId, 'goal_created', {
+    goal_id: result.goalId,
+    target_amount_thb: state.data.targetAmountThb,
+    target_year: state.data.targetYear,
+    monthly_contribution_thb: state.data.monthlyContributionThb,
+    expected_return_pct: state.data.expectedReturnPct,
+    allocation: state.data.allocation,
+  });
+  // Reply with the actual goal card so user lands on the dashboard immediately.
+  const goal = await getActiveGoal(env, userId);
+  const netWorth = await getNetWorth(env, userId).catch(() => ({ total_thb: 0 }));
+  return reply(env, ev.replyToken, goalCard({
+    goal,
+    netWorthThb: netWorth.total_thb,
+    expectedNowThb: 0,
+    contributionsTotalThb: 0,
+    monthsElapsed: 0,
+  }));
+}
+
+async function showGoal(ev, env, userId) {
+  const goal = await getActiveGoal(env, userId);
+  if (!goal) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยังไม่ได้ตั้งเป้าหมาย',
+      subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อเริ่มต้นแผน DCA ระยะยาว',
+    }));
+  }
+  const netWorth = await getNetWorth(env, userId).catch(() => ({ total_thb: 0 }));
+  const contributionsTotalThb = await getContributionsTotal(env, userId, goal.id);
+  const monthsElapsed = Math.max(0, Math.round((Date.now() / 1000 - goal.createdAt) / (60 * 60 * 24 * 30.4375)));
+  const expectedNowThb = expectedFutureValue({
+    pmt: goal.monthlyContributionThb,
+    expectedReturnPct: goal.expectedReturnPct,
+    monthsElapsed,
+  });
+  await logEvent(env, userId, 'goal_viewed', {
+    goal_id: goal.id,
+    net_worth_thb: Math.round(netWorth.total_thb || 0),
+    expected_now_thb: Math.round(expectedNowThb || 0),
+    contributions_total_thb: Math.round(contributionsTotalThb || 0),
+    months_elapsed: monthsElapsed,
+  });
+  return reply(env, ev.replyToken, goalCard({
+    goal,
+    netWorthThb: netWorth.total_thb,
+    expectedNowThb,
+    contributionsTotalThb,
+    monthsElapsed,
+  }));
+}
+
+async function clearGoalHandler(ev, env, userId) {
+  const ok = await clearActiveGoal(env, userId);
+  if (!ok) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยังไม่ได้ตั้งเป้าหมาย',
+    }));
+  }
+  await logEvent(env, userId, 'goal_cleared', null);
+  return reply(env, ev.replyToken, actionAckCard({
+    tone: 'info',
+    title: 'ลบเป้าหมายแล้ว',
+    subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อเริ่มใหม่',
+  }));
+}
+
+async function recordContributionHandler(ev, env, userId, arg) {
+  const amount = parseAmount(arg?.amountRaw);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'warning',
+      title: 'จำนวนเงินไม่ถูกต้อง',
+      subtitle: 'เช่น "เติม 30000" หรือ "เติม 30K thai_equity"',
+    }));
+  }
+
+  const goal = await getActiveGoal(env, userId);
+  const goalId = goal?.id || null;
+
+  // If user didn't specify a class, split per the goal's allocation. If no
+  // goal, dump into a generic 'cash' bucket (they can re-tag later).
+  const explicitClass = arg?.assetClass;
+  if (explicitClass) {
+    if (!isValidClass(explicitClass)) {
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: 'ประเภทสินทรัพย์ไม่ถูกต้อง',
+        subtitle: `เลือกจาก: ${Object.keys(ASSET_CLASSES).join(', ')}`,
+      }));
+    }
+    const res = await recordContribution(env, userId, {
+      goalId,
+      assetClass: explicitClass,
+      amountThb: amount,
+      notes: null,
+    });
+    if (!res.ok) return reply(env, ev.replyToken, actionAckCard({ tone: 'warning', title: 'บันทึกไม่สำเร็จ' }));
+    await logEvent(env, userId, 'contribution_recorded', {
+      goal_id: goalId, amount_thb: amount, asset_class: explicitClass,
+    });
+    const meta = ASSET_CLASSES[explicitClass];
+    return reply(env, ev.replyToken, actionAckCard({
+      title: `บันทึก ${amount.toLocaleString('en-US')} บาท`,
+      subtitle: `${meta.emoji} ${meta.label}`,
+      lines: goal ? [{ label: 'รวม DCA สะสม', value: `${(await getContributionsTotal(env, userId, goalId)).toLocaleString('en-US')} บาท` }] : [],
+    }));
+  }
+
+  // Split across allocation
+  const allocation = goal?.allocationTargets || DEFAULT_ALLOCATION;
+  const totalWeight = Object.values(allocation).reduce((s, v) => s + Number(v || 0), 0) || 1;
+  const lines = [];
+  for (const [cls, weight] of Object.entries(allocation)) {
+    const w = Number(weight) || 0;
+    if (w <= 0) continue;
+    const slice = amount * (w / totalWeight);
+    await recordContribution(env, userId, {
+      goalId, assetClass: cls, amountThb: slice, notes: 'auto-split',
+    });
+    const meta = ASSET_CLASSES[cls] || ASSET_CLASSES.other;
+    lines.push({ label: `${meta.emoji} ${meta.label}`, value: `${Math.round(slice).toLocaleString('en-US')} บาท` });
+  }
+  await logEvent(env, userId, 'contribution_recorded', {
+    goal_id: goalId, amount_thb: amount, asset_class: 'auto-split',
+    allocation,
+  });
+  return reply(env, ev.replyToken, actionAckCard({
+    title: `บันทึก ${amount.toLocaleString('en-US')} บาท`,
+    subtitle: goal ? `แบ่งตามแผน DCA` : 'ยังไม่มีเป้าหมาย — แบ่งตาม default 60/30/10',
+    lines,
+  }));
+}
+
+async function logGoalMonthlyContribution(ev, env, userId) {
+  const goal = await getActiveGoal(env, userId);
+  if (!goal) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'warning',
+      title: 'ยังไม่มีเป้าหมาย',
+      subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อตั้ง',
+    }));
+  }
+  return recordContributionHandler(ev, env, userId, {
+    amountRaw: String(Math.round(goal.monthlyContributionThb)),
+    assetClass: null,
+  });
 }
 
 async function runFxCron(env) {

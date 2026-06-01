@@ -197,6 +197,10 @@ test message) are tracked as a follow-up.
 | `ขาย <SYMBOL> <จำนวน> @ <ราคา>` / `sell …` | Append a SELL transaction. Computes realized P/L against the existing avg cost, decrements (or removes) the holding, and replies with a Flex confirm card. |
 | `ความมั่งคั่ง` / `net worth` / `wealth` | **AIWealthOS Phase 1** — collapse every portfolio (Thai + global + cash) into a single THB net-worth number, broken down by asset class with an FX-adjusted view. Forces a backfill of asset_class on the user's holdings on first call. |
 | `ติด <SYM> <class>` / `tag <SYM> <class>` | Override the inferred asset class for a symbol across every portfolio. Valid classes: `thai_equity`, `global_etf`, `thai_fund`, `hk_equity`, `cash`, `crypto`, `other`. |
+| `ตั้งเป้าหมาย` / `set goal` | **AIWealthOS Phase 1.2** — start the 3-step goal wizard (target amount → horizon → allocation). Back-solves the monthly DCA via PMT formula and shows a confirmation card. Saves as the user's single active goal. |
+| `เป้าหมาย` / `goal` | Show the active goal: progress vs target, glidepath status (🟢🟡🔴), DCA adherence %, allocation targets. |
+| `เติม <amount> [<class>]` / `dca <amount>` | Log a DCA contribution. `เติม 30000` splits per goal allocation; `เติม 30000 global_etf` allocates to a single class. Accepts `20M` / `5K` shortcuts. |
+| `ลบเป้าหมาย` / `clear goal` | Deactivate the current goal so a fresh one can be set. Past contributions are preserved. |
 | `รายการซื้อขาย` / `transactions` | Show the active portfolio's transaction history as a Flex card |
 | `ไดอารี่` / `diary` | Trading-diary card: total realized P/L, win rate, biggest win/loss with holding-period in days, last 8 closed trades. Footer buttons re-scope to **30 / 90 / ทั้งหมด**. |
 | `ไดอารี่ <SYM>` | Diary zoomed into a single symbol's history |

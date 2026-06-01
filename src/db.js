@@ -848,6 +848,142 @@ export async function getTradingDiary(env, userId, portfolioId, opts = {}) {
   };
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// AIWealthOS Phase 1.2 — goals + DCA contributions
+//
+// One active goal per user (free-tier limit). saveGoal atomically deactivates
+// any prior active goal so the user sees only the current one in their card.
+// Contributions are append-only and survive goal re-creation via the
+// nullable goal_id FK (existing rows get NULL on goal delete).
+// ────────────────────────────────────────────────────────────────────────
+
+export async function saveGoal(env, userId, goal) {
+  const {
+    targetAmountThb,
+    targetYear,
+    expectedReturnPct,
+    monthlyContributionThb,
+    allocationTargets,
+  } = goal;
+  if (!Number.isFinite(targetAmountThb) || !Number.isInteger(targetYear) || !Number.isFinite(monthlyContributionThb)) {
+    return { ok: false, error: 'invalid_input' };
+  }
+
+  // Deactivate any existing active goal so this becomes the single active.
+  await env.DB.prepare(
+    `UPDATE goals SET is_active = 0, updated_at = unixepoch() WHERE user_id = ? AND is_active = 1`,
+  ).bind(userId).run();
+
+  const { meta } = await env.DB.prepare(
+    `INSERT INTO goals
+       (user_id, target_amount_thb, target_year, expected_return_pct,
+        monthly_contribution_thb, allocation_targets_json, is_active)
+     VALUES (?, ?, ?, ?, ?, ?, 1)`,
+  )
+    .bind(
+      userId,
+      Number(targetAmountThb),
+      Number(targetYear),
+      Number(expectedReturnPct) || 6.5,
+      Number(monthlyContributionThb),
+      JSON.stringify(allocationTargets || {}),
+    )
+    .run();
+  return { ok: true, goalId: meta?.last_row_id };
+}
+
+export async function getActiveGoal(env, userId) {
+  const row = await env.DB.prepare(
+    `SELECT id, target_amount_thb, target_year, expected_return_pct,
+            monthly_contribution_thb, allocation_targets_json,
+            created_at, updated_at
+       FROM goals
+      WHERE user_id = ? AND is_active = 1
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+  )
+    .bind(userId)
+    .first();
+  if (!row) return null;
+  return {
+    id: row.id,
+    targetAmountThb: row.target_amount_thb,
+    targetYear: row.target_year,
+    expectedReturnPct: row.expected_return_pct,
+    monthlyContributionThb: row.monthly_contribution_thb,
+    allocationTargets: row.allocation_targets_json
+      ? safeParse(row.allocation_targets_json) || {}
+      : {},
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function clearActiveGoal(env, userId) {
+  const { meta } = await env.DB.prepare(
+    `UPDATE goals SET is_active = 0, updated_at = unixepoch()
+      WHERE user_id = ? AND is_active = 1`,
+  )
+    .bind(userId)
+    .run();
+  return (meta?.changes || 0) > 0;
+}
+
+export async function recordContribution(env, userId, { goalId, assetClass, amountThb, notes }) {
+  if (!Number.isFinite(amountThb) || amountThb <= 0) return { ok: false, error: 'invalid_input' };
+  if (!assetClass) return { ok: false, error: 'invalid_input' };
+  const { meta } = await env.DB.prepare(
+    `INSERT INTO contributions (user_id, goal_id, asset_class, amount_thb, notes)
+     VALUES (?, ?, ?, ?, ?)`,
+  )
+    .bind(userId, goalId || null, assetClass, Number(amountThb), notes || null)
+    .run();
+  return { ok: true, contributionId: meta?.last_row_id };
+}
+
+// Sum of all contributions ever attributed to a given goal — used by the
+// "you've put in X / monthly should have been Y" display.
+export async function getContributionsTotal(env, userId, goalId) {
+  if (!goalId) return 0;
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(SUM(amount_thb), 0) AS total
+       FROM contributions WHERE user_id = ? AND goal_id = ?`,
+  )
+    .bind(userId, goalId)
+    .first();
+  return Number(row?.total || 0);
+}
+
+// Per-class contribution split — drives the "DCA adherence by class" view.
+export async function getContributionsByClass(env, userId, goalId) {
+  if (!goalId) return {};
+  const { results } = await env.DB.prepare(
+    `SELECT asset_class, COALESCE(SUM(amount_thb), 0) AS total
+       FROM contributions WHERE user_id = ? AND goal_id = ?
+       GROUP BY asset_class`,
+  )
+    .bind(userId, goalId)
+    .all();
+  const map = {};
+  for (const r of (results || [])) map[r.asset_class] = Number(r.total || 0);
+  return map;
+}
+
+// Recent contributions feed — most-recent N for the goal card and journey.
+export async function listContributions(env, userId, goalId, limit = 12) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, asset_class, amount_thb, notes, contributed_at
+       FROM contributions
+      WHERE user_id = ?
+        AND (? IS NULL OR goal_id = ?)
+      ORDER BY contributed_at DESC, id DESC
+      LIMIT ?`,
+  )
+    .bind(userId, goalId || null, goalId || null, limit)
+    .all();
+  return results || [];
+}
+
 function safeParse(s) {
   try { return JSON.parse(s); } catch { return s; }
 }

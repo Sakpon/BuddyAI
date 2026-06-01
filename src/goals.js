@@ -55,6 +55,110 @@ export function monthsUntil(targetYear) {
   return Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24 * 30.4375)));
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Plan-vs-actual analytics — used by the goal card's comparison section.
+//
+// These are deliberately approximations, not full MWRR/IRR Newton-Raphson
+// solves. The user is comparing "how is my plan doing" not preparing tax
+// filings, so a closed-form simplification (treats contributions as evenly
+// distributed) keeps the math fast and the explanations intuitive.
+// ──────────────────────────────────────────────────────────────────────────
+
+// Implied annualised return given start + contributions + current value.
+// Simplified MWRR-like: assumes contributions arrived evenly across the
+// elapsed period, so avgInvested = startValue + contributionsTotal / 2.
+// Good enough for the "ผลตอบแทนที่ทำได้จริง" comparison.
+export function impliedAnnualReturnPct({ startValue, contributionsTotal, currentValue, monthsElapsed }) {
+  const months = Number(monthsElapsed) || 0;
+  if (months <= 0) return null;
+  const years = months / 12;
+  const start = Number(startValue) || 0;
+  const contribs = Number(contributionsTotal) || 0;
+  const cur = Number(currentValue) || 0;
+  const avgInvested = start + contribs / 2;
+  if (avgInvested <= 0) return null;
+  const totalGain = cur - start - contribs;
+  return (totalGain / avgInvested) / years * 100;
+}
+
+// How many months until current trajectory reaches the target?
+//   FV(t) = PV*(1+r)^t + PMT * ((1+r)^t - 1)/r
+//   Set FV = TARGET, solve for t:
+//     (1+r)^t = (TARGET*r + PMT) / (PV*r + PMT)
+//     t       = log(...) / log(1+r)
+// Returns null when current PMT + return path mathematically can't reach
+// the target (e.g. PMT too small even with infinite time).
+export function monthsToTarget({ currentValue, monthlyContribution, expectedReturnPct, targetAmount }) {
+  const PV = Number(currentValue) || 0;
+  const PMT = Number(monthlyContribution) || 0;
+  const TARGET = Number(targetAmount) || 0;
+  const r = (Number(expectedReturnPct) / 100) / 12;
+  if (PV >= TARGET) return 0;
+  if (PMT <= 0 && r <= 0) return null;
+  if (r === 0) return Math.ceil((TARGET - PV) / Math.max(1, PMT));
+  const numer = TARGET * r + PMT;
+  const denom = PV * r + PMT;
+  if (denom <= 0 || numer <= 0) return null;
+  const ratio = numer / denom;
+  if (ratio <= 1) return null;
+  return Math.ceil(Math.log(ratio) / Math.log(1 + r));
+}
+
+// What monthly DCA does the user need NOW (with current PV) to still hit the
+// original target year? Reverse of solveMonthlyContribution but accounting
+// for current value as the new "starting point".
+//
+//   FV  = PV*(1+r)^n + PMT*((1+r)^n - 1)/r
+//   PMT = (FV - PV*(1+r)^n) * r / ((1+r)^n - 1)
+export function requiredMonthlyToTarget({ currentValue, expectedReturnPct, targetAmount, monthsRemaining }) {
+  const PV = Number(currentValue) || 0;
+  const TARGET = Number(targetAmount) || 0;
+  const n = Math.max(1, Number(monthsRemaining));
+  const r = (Number(expectedReturnPct) / 100) / 12;
+  if (r === 0) return Math.max(0, (TARGET - PV) / n);
+  const growth = Math.pow(1 + r, n);
+  const futurePV = PV * growth;
+  if (futurePV >= TARGET) return 0;
+  return (TARGET - futurePV) * r / (growth - 1);
+}
+
+// What annual return does the user need (with current PV + current PMT) to
+// hit the original target year? Bisection — the closed-form is ugly because
+// r appears both as base and exponent and we'd need Lambert W to invert it.
+export function requiredAnnualReturnPct({ currentValue, monthlyContribution, targetAmount, monthsRemaining }) {
+  const PV = Number(currentValue) || 0;
+  const PMT = Number(monthlyContribution) || 0;
+  const TARGET = Number(targetAmount) || 0;
+  const n = Math.max(1, Number(monthsRemaining));
+
+  const fvAt = (annualPct) => {
+    const r = (annualPct / 100) / 12;
+    if (Math.abs(r) < 1e-10) return PV + PMT * n;
+    return PV * Math.pow(1 + r, n) + PMT * (Math.pow(1 + r, n) - 1) / r;
+  };
+
+  let lo = -20, hi = 50;
+  if (fvAt(hi) < TARGET) return null;          // even 50% can't bridge it
+  if (fvAt(lo) > TARGET) return null;          // even -20% would overshoot (unusual)
+  for (let i = 0; i < 80; i++) {
+    const mid = (lo + hi) / 2;
+    if (fvAt(mid) > TARGET) hi = mid;
+    else lo = mid;
+    if (hi - lo < 0.01) break;
+  }
+  return (lo + hi) / 2;
+}
+
+// Convert a months count into the target calendar year (Asia/Bangkok ceiling).
+// Used to render "คาดการณ์ปี 2043" alongside the planned 2041.
+export function monthsToTargetYear(months, now = new Date()) {
+  if (!Number.isFinite(months) || months < 0) return null;
+  const bkkMs = now.getTime() + 7 * 60 * 60 * 1000;
+  const d = new Date(bkkMs);
+  const reachMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + Math.ceil(months), 1);
+  return new Date(reachMs).getUTCFullYear();
+}
+
 // Validation — returns null if input is sane, otherwise an error string.
 export function validateTargetAmount(amount) {
   const n = Number(amount);

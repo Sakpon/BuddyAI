@@ -919,6 +919,16 @@ export async function getActiveGoal(env, userId) {
   };
 }
 
+// Used by the nudge cron — returns every user_id with an active goal so we
+// can fan-out drift checks + DCA reminders without scanning the full user
+// table.
+export async function getUsersWithActiveGoals(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT DISTINCT user_id FROM goals WHERE is_active = 1`,
+  ).all();
+  return (results || []).map((r) => r.user_id);
+}
+
 export async function clearActiveGoal(env, userId) {
   const { meta } = await env.DB.prepare(
     `UPDATE goals SET is_active = 0, updated_at = unixepoch()

@@ -29,6 +29,7 @@ import {
   getPortfolioWithHoldings,
   getSubscribedUsers,
   getTradingDiary,
+  getUsersWithActiveGoals,
   listContributions,
   listPortfolios,
   listTransactions,
@@ -104,6 +105,13 @@ import {
   validateTargetYear,
 } from './goals.js';
 import { goalCard, goalConfirmCard } from './flex/goal.js';
+import {
+  DRIFT_THRESHOLD_PP,
+  evaluateUserNudges,
+  markDcaSent,
+  markDriftSent,
+} from './nudges.js';
+import { dcaReminderCard, driftNudgeCard } from './flex/nudges.js';
 import { adminPage } from './admin/page.js';
 import {
   adminApiCronLogs,
@@ -176,6 +184,13 @@ export default {
       return json({ ok: true, triggered: 'daily-fx' });
     }
 
+    if (url.pathname === '/test-nudges') {
+      if (!authorised(request, env)) return unauthorised(false);
+      const force = url.searchParams.get('force') === '1';
+      ctx.waitUntil(runNudgesCron(env, { force }));
+      return json({ ok: true, triggered: 'daily-nudges', force });
+    }
+
     if (url.pathname === '/test-subs') {
       if (!authorised(request, env)) return unauthorised(false);
       const subs = await getSubscribedUsers(env);
@@ -184,16 +199,18 @@ export default {
 
     if (url.pathname === '/test-log') {
       if (!authorised(request, env)) return unauthorised(false);
-      const [alertLog, newsLog, fxLog] = await Promise.all([
+      const [alertLog, newsLog, fxLog, nudgesLog] = await Promise.all([
         env.SESSION_KV.get('cron:last-run'),
         env.SESSION_KV.get('news:last-run'),
         env.SESSION_KV.get('fx:last-run'),
+        env.SESSION_KV.get('nudges:last-run'),
       ]);
       return json({
         ok: true,
         alert: alertLog ? JSON.parse(alertLog) : null,
         news: newsLog ? JSON.parse(newsLog) : null,
         fx: fxLog ? JSON.parse(fxLog) : null,
+        nudges: nudgesLog ? JSON.parse(nudgesLog) : null,
       });
     }
 
@@ -1846,6 +1863,102 @@ async function logGoalMonthlyContribution(ev, env, userId) {
     amountRaw: String(Math.round(goal.monthlyContributionThb)),
     assetClass: null,
   });
+}
+
+// AIWealthOS Phase 2 — daily nudge cron.
+//
+// Iterates every user with an active goal, asks evaluateUserNudges() what
+// (if anything) should fire RIGHT NOW, pushes the corresponding Flex card,
+// and marks the KV throttle. Behavior intentionally split:
+//   - Drift detection runs daily; at most once per user per 7 days.
+//   - DCA reminder fires only on DCA_REMINDER_DOM (default: 1st of month
+//     in Asia/Bangkok); at most once per user per calendar month.
+//
+// Call with { force: true } via /test-nudges?force=1 to bypass throttles.
+async function runNudgesCron(env, { force = false } = {}) {
+  const startedAt = new Date().toISOString();
+  const result = {
+    startedAt,
+    candidates: 0,
+    drift_sent: 0,
+    drift_skipped_throttled: 0,
+    drift_skipped_under_threshold: 0,
+    dca_sent: 0,
+    dca_skipped_throttled: 0,
+    dca_skipped_off_day: 0,
+    errors: [],
+  };
+
+  try {
+    const userIds = await getUsersWithActiveGoals(env);
+    result.candidates = userIds.length;
+
+    for (const userId of userIds) {
+      try {
+        const dec = await evaluateUserNudges(env, userId, { force });
+        if (dec.skipReason) continue;
+
+        // Drift nudge
+        if (dec.drift) {
+          const ok = await push(env, userId, driftNudgeCard({
+            driftReport: dec.drift.report,
+            goal: dec.goal,
+          }));
+          if (ok) {
+            if (!force) await markDriftSent(env, dec.drift.key);
+            result.drift_sent++;
+            await logEvent(env, userId, 'drift_nudge_sent', {
+              goal_id: dec.goal.id,
+              max_drift_pp: Math.round(dec.drift.report.maxDriftPP),
+              overweight: dec.drift.report.overweight?.class || null,
+              underweight: dec.drift.report.underweight?.class || null,
+              forced: !!force,
+            });
+          }
+        } else if (dec.driftSkippedThrottled) {
+          result.drift_skipped_throttled++;
+        } else {
+          result.drift_skipped_under_threshold++;
+        }
+
+        // Monthly DCA reminder
+        if (dec.dca) {
+          const ok = await push(env, userId, dcaReminderCard({
+            goal: dec.goal,
+            ym: dec.dca.ym,
+            holdingsCount: (dec.netWorth.breakdown || []).length,
+          }));
+          if (ok) {
+            if (!force) await markDcaSent(env, dec.dca.key);
+            result.dca_sent++;
+            await logEvent(env, userId, 'dca_reminder_sent', {
+              goal_id: dec.goal.id,
+              ym: dec.dca.ym,
+              monthly_thb: Math.round(dec.goal.monthlyContributionThb),
+              forced: !!force,
+            });
+          }
+        } else if (dec.dcaSkippedThrottled) {
+          result.dca_skipped_throttled++;
+        } else {
+          result.dca_skipped_off_day++;
+        }
+      } catch (perUserErr) {
+        const msg = String(perUserErr?.message || perUserErr).slice(0, 200);
+        result.errors.push({ userId, error: msg });
+      }
+    }
+  } catch (err) {
+    result.fatal = String(err?.message || err).slice(0, 300);
+    console.error('nudges cron error', err);
+  } finally {
+    result.finishedAt = new Date().toISOString();
+    await env.SESSION_KV.put(
+      'nudges:last-run',
+      JSON.stringify(result),
+      { expirationTtl: 60 * 60 * 24 * 7 },
+    );
+  }
 }
 
 async function runFxCron(env) {

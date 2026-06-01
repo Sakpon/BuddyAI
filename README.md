@@ -203,6 +203,8 @@ test message) are tracked as a follow-up.
 | `เป้าหมาย` / `goal` | Show the active goal: progress vs target, glidepath status (🟢🟡🔴), DCA adherence %, allocation targets. |
 | `เติม <amount> [<class>]` / `dca <amount>` | Log a DCA contribution. `เติม 30000` splits per goal allocation; `เติม 30000 global_etf` allocates to a single class. Accepts `20M` / `5K` shortcuts. |
 | `ลบเป้าหมาย` / `clear goal` | Deactivate the current goal so a fresh one can be set. Past contributions are preserved. |
+| `ปันผล <SYM> <amount>` / `dividend <SYM> <amount>` | **AIWealthOS Phase 3** — log a received dividend. Two input modes: `ปันผล PTT 2150` (net amount) or `ปันผล PTT 2.15 1000` (per-share × quantity). Bot replies with a Flex confirm card carrying reinvest CTAs that point at the existing `เติม` flow (DCA-aware split) or a per-symbol re-buy. |
+| `รายการปันผล` / `dividends` | Year-to-date dividend total + top symbols this year + recent ledger entries. |
 | `รายการซื้อขาย` / `transactions` | Show the active portfolio's transaction history as a Flex card |
 | `ไดอารี่` / `diary` | Trading-diary card: total realized P/L, win rate, biggest win/loss with holding-period in days, last 8 closed trades. Footer buttons re-scope to **30 / 90 / ทั้งหมด**. |
 | `ไดอารี่ <SYM>` | Diary zoomed into a single symbol's history |

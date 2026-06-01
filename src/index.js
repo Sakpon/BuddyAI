@@ -21,6 +21,8 @@ import {
   getContributionsByClass,
   getContributionsThisMonth,
   getContributionsTotal,
+  getDividendsTotalAllTime,
+  getDividendsYtd,
   getHistory,
   getJourney,
   getNewsSubscribedUsers,
@@ -32,11 +34,13 @@ import {
   getTradingDiary,
   getUsersWithActiveGoals,
   listContributions,
+  listDividends,
   listPortfolios,
   listTransactions,
   logEvent,
   recordBuy,
   recordContribution,
+  recordDividend,
   recordSell,
   renamePortfolio,
   saveGoal,
@@ -118,6 +122,7 @@ import {
 } from './nudges.js';
 import { dcaReminderCard, driftNudgeCard } from './flex/nudges.js';
 import { weeklyStatusCard } from './flex/weeklyStatus.js';
+import { dividendConfirmCard, dividendsListCard } from './flex/dividends.js';
 import { adminPage } from './admin/page.js';
 import {
   adminApiCronLogs,
@@ -136,6 +141,8 @@ const HELP_TH = [
   '• "ตั้งเป้าหมาย" — ตั้งเป้าความมั่งคั่งระยะยาวพร้อมแผน DCA',
   '• "เป้าหมาย" / "goal" — ดูเป้าหมายและความก้าวหน้า',
   '• "เติม <จำนวน> [<ประเภท>]" — บันทึก DCA เช่น "เติม 30000" หรือ "เติม 30K thai_equity"',
+  '• "ปันผล <SYM> <จำนวน>" — บันทึกปันผลที่ได้รับ (หรือ "ปันผล PTT 2.15 1000" สำหรับ ต่อหุ้น × จำนวน)',
+  '• "รายการปันผล" — ดูปันผลที่บันทึกไว้ + ยอดสะสมปีนี้',
   '• "ลบเป้าหมาย" — ลบเป้าหมายปัจจุบัน',
   '• "พอร์ต" — ดูพอร์ตที่ใช้งานอยู่',
   '• "พอร์ตทั้งหมด" — รายการพอร์ตทั้งหมด เลือก/ลบได้',
@@ -764,6 +771,12 @@ async function handleText(ev, env, userId, text) {
   if (cmd === 'contribute') {
     return recordContributionHandler(ev, env, userId, match.arg);
   }
+  if (cmd === 'list-dividends') {
+    return showDividendsList(ev, env, userId);
+  }
+  if (cmd === 'record-dividend') {
+    return recordDividendHandler(ev, env, userId, match.arg);
+  }
   if (cmd === 'rename-portfolio') {
     const newName = match.arg;
     if (!newName) {
@@ -1289,6 +1302,27 @@ function matchCommand(text) {
       arg: {
         amountRaw: contribMatch[2],
         assetClass: contribMatch[3] ? contribMatch[3].toLowerCase() : null,
+      },
+    };
+  }
+
+  // AIWealthOS Phase 3 — dividends
+  if (['ปันผล', 'รายการปันผล', 'ปันผลทั้งหมด', 'dividends', 'div'].includes(tl)) {
+    return { cmd: 'list-dividends' };
+  }
+  // ปันผล <SYM> <amount>                — net amount received
+  // ปันผล <SYM> <per_share> @ <qty>      — per-share × quantity (with optional @ separator)
+  // ปันผล <SYM> <per_share> <qty>        — same, space-separated
+  const dividendMatch = t.match(
+    /^(?:ปันผล|dividend)\s+([A-Za-z0-9.\-]+)\s+([\d.,]+)(?:\s*@?\s*([\d.,]+))?$/i,
+  );
+  if (dividendMatch) {
+    return {
+      cmd: 'record-dividend',
+      arg: {
+        symbol: dividendMatch[1].toUpperCase(),
+        firstNum: dividendMatch[2],
+        secondNum: dividendMatch[3] || null,
       },
     };
   }
@@ -2069,6 +2103,77 @@ async function runWeeklyStatusCron(env, { force = false } = {}) {
       { expirationTtl: 60 * 60 * 24 * 14 },
     );
   }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// AIWealthOS Phase 3 — dividend ledger handlers
+// ────────────────────────────────────────────────────────────────────────
+
+async function recordDividendHandler(ev, env, userId, arg) {
+  const symbol = String(arg?.symbol || '').toUpperCase();
+  // Two number-input modes:
+  //   ปันผล PTT 2150               → amount = 2150 (one num)
+  //   ปันผล PTT 2.15 @ 1000         → per_share=2.15, qty=1000, amount=2150 (two nums)
+  const firstNum = Number(String(arg?.firstNum || '').replace(/,/g, ''));
+  const secondNum = arg?.secondNum != null ? Number(String(arg.secondNum).replace(/,/g, '')) : null;
+  let amountThb, perShare = null, quantity = null;
+  if (Number.isFinite(secondNum) && secondNum > 0) {
+    perShare = firstNum;
+    quantity = secondNum;
+    amountThb = firstNum * secondNum;
+  } else {
+    amountThb = firstNum;
+  }
+
+  if (!Number.isFinite(amountThb) || amountThb <= 0) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'warning',
+      title: 'จำนวนปันผลไม่ถูกต้อง',
+      subtitle: 'เช่น "ปันผล PTT 2150" หรือ "ปันผล PTT 2.15 1000"',
+    }));
+  }
+
+  const active = await getActivePortfolio(env, userId).catch(() => null);
+  const result = await recordDividend(env, userId, {
+    portfolioId: active?.portfolio?.id || null,
+    symbol,
+    amountThb,
+    perShare,
+    quantity,
+  });
+  if (!result.ok) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'warning',
+      title: 'บันทึกปันผลไม่สำเร็จ',
+    }));
+  }
+  const goal = await getActiveGoal(env, userId).catch(() => null);
+  await logEvent(env, userId, 'dividend_recorded', {
+    dividend_id: result.dividendId,
+    symbol,
+    amount_thb: amountThb,
+    per_share: perShare,
+    quantity,
+    portfolio_id: active?.portfolio?.id || null,
+  });
+  return reply(env, ev.replyToken, dividendConfirmCard({
+    result: { ...result, perShare, quantity },
+    hasActiveGoal: !!goal,
+  }));
+}
+
+async function showDividendsList(ev, env, userId) {
+  const [dividends, ytd, allTimeTotal] = await Promise.all([
+    listDividends(env, userId, 20),
+    getDividendsYtd(env, userId),
+    getDividendsTotalAllTime(env, userId),
+  ]);
+  await logEvent(env, userId, 'dividends_viewed', {
+    count: dividends.length,
+    ytd_total_thb: Math.round(ytd.total || 0),
+    all_time_thb: Math.round(allTimeTotal || 0),
+  });
+  return reply(env, ev.replyToken, dividendsListCard({ dividends, ytd, allTimeTotal }));
 }
 
 async function runFxCron(env) {

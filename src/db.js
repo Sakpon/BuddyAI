@@ -919,6 +919,109 @@ export async function getActiveGoal(env, userId) {
   };
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// AIWealthOS Phase 3 — dividend ledger
+// ────────────────────────────────────────────────────────────────────────
+
+export async function recordDividend(env, userId, payload) {
+  const symbol = String(payload?.symbol || '').toUpperCase().trim();
+  const amountThb = Number(payload?.amountThb);
+  if (!symbol || !Number.isFinite(amountThb) || amountThb <= 0) {
+    return { ok: false, error: 'invalid_input' };
+  }
+  // Resolve portfolio_id from active portfolio if not explicitly supplied.
+  const portfolioId = payload?.portfolioId ?? null;
+  const perShare = payload?.perShare != null ? Number(payload.perShare) : null;
+  const quantity = payload?.quantity != null ? Number(payload.quantity) : null;
+  const withholdingTaxThb = payload?.withholdingTaxThb != null ? Number(payload.withholdingTaxThb) : 0;
+  const exDate = payload?.exDate ?? null;
+  const payDate = payload?.payDate ?? null;
+  const notes = payload?.notes ?? null;
+
+  const { meta } = await env.DB.prepare(
+    `INSERT INTO dividends
+       (user_id, portfolio_id, symbol, amount_thb, per_share, quantity,
+        withholding_tax_thb, ex_date, pay_date, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, unixepoch()), ?)`,
+  )
+    .bind(
+      userId,
+      portfolioId,
+      symbol,
+      amountThb,
+      perShare,
+      quantity,
+      withholdingTaxThb,
+      exDate,
+      payDate,
+      notes,
+    )
+    .run();
+  return { ok: true, dividendId: meta?.last_row_id, symbol, amountThb };
+}
+
+export async function listDividends(env, userId, limit = 20) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, portfolio_id, symbol, amount_thb, per_share, quantity,
+            withholding_tax_thb, ex_date, pay_date, status, notes, created_at
+       FROM dividends
+      WHERE user_id = ?
+      ORDER BY pay_date DESC, id DESC
+      LIMIT ?`,
+  )
+    .bind(userId, limit)
+    .all();
+  return results || [];
+}
+
+// Year-to-date dividend total + per-symbol top contributors. Drives the
+// "ปันผลปีนี้" summary panel on the list card.
+export async function getDividendsYtd(env, userId, now = new Date()) {
+  const bkkMs = now.getTime() + 7 * 60 * 60 * 1000;
+  const bkk = new Date(bkkMs);
+  const yearStartBkkMs = Date.UTC(bkk.getUTCFullYear(), 0, 1);
+  const yearStartUnix = Math.floor((yearStartBkkMs - 7 * 60 * 60 * 1000) / 1000);
+
+  const totalRow = await env.DB.prepare(
+    `SELECT COALESCE(SUM(amount_thb), 0) AS total,
+            COALESCE(SUM(withholding_tax_thb), 0) AS tax_total,
+            COUNT(*) AS n
+       FROM dividends WHERE user_id = ? AND pay_date >= ?`,
+  )
+    .bind(userId, yearStartUnix)
+    .first();
+
+  const { results: bySymbol } = await env.DB.prepare(
+    `SELECT symbol, SUM(amount_thb) AS total
+       FROM dividends WHERE user_id = ? AND pay_date >= ?
+       GROUP BY symbol
+       ORDER BY total DESC
+       LIMIT 5`,
+  )
+    .bind(userId, yearStartUnix)
+    .all();
+
+  return {
+    year: bkk.getUTCFullYear(),
+    total: Number(totalRow?.total || 0),
+    tax_total: Number(totalRow?.tax_total || 0),
+    count: Number(totalRow?.n || 0),
+    by_symbol: (bySymbol || []).map((r) => ({
+      symbol: r.symbol,
+      total: Number(r.total || 0),
+    })),
+  };
+}
+
+export async function getDividendsTotalAllTime(env, userId) {
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(SUM(amount_thb), 0) AS total FROM dividends WHERE user_id = ?`,
+  )
+    .bind(userId)
+    .first();
+  return Number(row?.total || 0);
+}
+
 // Used by the nudge cron — returns every user_id with an active goal so we
 // can fan-out drift checks + DCA reminders without scanning the full user
 // table.

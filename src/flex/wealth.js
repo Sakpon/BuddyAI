@@ -2,7 +2,7 @@
 // Big THB total at the top, per-asset-class breakdown with bars + emoji,
 // per-portfolio sub-list, FX freshness footer.
 
-export function netWorthCard({ netWorth }) {
+export function netWorthCard({ netWorth, hasGoal = true }) {
   const total = Number(netWorth.total_thb) || 0;
   const breakdown = (netWorth.breakdown || []).slice(0, 7);
   const portfolios = (netWorth.portfolios || []).slice(0, 6);
@@ -103,7 +103,21 @@ export function netWorthCard({ netWorth }) {
       footer: {
         type: 'box',
         layout: 'vertical',
+        spacing: 'sm',
         contents: [
+          ...(!hasGoal && total > 0
+            ? [{
+                type: 'button',
+                style: 'primary',
+                color: '#16A34A',
+                height: 'sm',
+                action: {
+                  type: 'message',
+                  label: '🎯 ตั้งเป้าหมายความมั่งคั่ง',
+                  text: 'ตั้งเป้าหมาย',
+                },
+              }]
+            : []),
           {
             type: 'text',
             text: 'รวมทุกพอร์ตเป็นเงินบาท · เพื่อการศึกษาเท่านั้น ไม่ใช่คำแนะนำการลงทุน',

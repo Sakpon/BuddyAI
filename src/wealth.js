@@ -17,6 +17,10 @@ import { convertToThb, getLatestRates } from './fx.js';
 //       { id, name, currency, total_thb, total_native, holding_count },
 //       ...
 //     ],
+//     currency_totals: [
+//       { currency, value_thb, value_native, holding_count, pct },
+//       ...
+//     ],
 //     fx: { THB: 1, USD: 36.12, HKD: 4.6, ... },
 //     fx_fetched_at: number | null,
 //     warnings: [string],
@@ -37,7 +41,32 @@ export async function getNetWorth(env, userId) {
 
   const warnings = [];
   const portfolioRows = [];
-  const classTotals = new Map(); // class → { value_thb, currencies: Set }
+  const classTotals = new Map();    // class → { value_thb, currencies: Set }
+  const currencyTotals = new Map(); // currency → { value_thb, value_native, holding_count }
+
+  // Helper: infer the actual currency of a holding. Default-THB portfolios
+  // are the common legacy case — every holding inherits 'THB' even when the
+  // holding is clearly a US ETF or HK stock. When the portfolio uses the
+  // default, fall back to the class's natural currency (global_etf → USD,
+  // hk_equity → HKD, etc.). When the portfolio has an EXPLICIT non-THB
+  // currency (e.g. user uploaded a US broker statement), trust that instead.
+  const holdingCurrency = (portfolioCurrency, cls) => {
+    if (portfolioCurrency && portfolioCurrency !== 'THB') return portfolioCurrency;
+    return defaultCurrencyForClass(cls);
+  };
+
+  const addToCurrency = (currency, valueNative, valueThb, isHolding) => {
+    if (valueThb == null || !Number.isFinite(valueThb) || valueThb <= 0) return;
+    const slot = currencyTotals.get(currency) || {
+      value_thb: 0,
+      value_native: 0,
+      holding_count: 0,
+    };
+    slot.value_thb += valueThb;
+    if (Number.isFinite(Number(valueNative))) slot.value_native += Number(valueNative);
+    if (isHolding) slot.holding_count++;
+    currencyTotals.set(currency, slot);
+  };
 
   for (const p of (portfolios || [])) {
     const portfolioCurrency = p.currency || 'THB';
@@ -48,8 +77,8 @@ export async function getNetWorth(env, userId) {
 
     // Sum holdings into per-class buckets. Each holding's notional value is
     // market_value (preferred) or qty × market_price (fallback). Currency
-    // comes from the portfolio's reporting currency unless we have an
-    // explicit class-level override below.
+    // is inferred from the portfolio override OR the asset class (see
+    // holdingCurrency() above).
     const { results: holdings } = await env.DB.prepare(`
       SELECT symbol, quantity, market_price, market_value, asset_class
         FROM holdings
@@ -64,26 +93,25 @@ export async function getNetWorth(env, userId) {
             ? Number(h.quantity) * Number(h.market_price)
             : null);
       if (nativeValue == null) continue;
-      // The class determines the *expected* currency; but if the portfolio
-      // is reporting in a single broker currency, use that — it's the
-      // authoritative number from the user's screen.
-      const currency = portfolioCurrency;
+      const currency = holdingCurrency(portfolioCurrency, cls);
       const thb = convertToThb(nativeValue, currency, rates);
       if (thb == null) continue;
       const slot = classTotals.get(cls) || { value_thb: 0, currencies: new Set() };
       slot.value_thb += thb;
       slot.currencies.add(currency);
       classTotals.set(cls, slot);
+      addToCurrency(currency, nativeValue, thb, true);
     }
 
-    // Add cash directly into the cash class (assume cash is in the portfolio
-    // currency, not the user's home currency).
+    // Cash always uses the portfolio's reporting currency (it's literally
+    // sitting in that account).
     const cashThb = convertToThb(p.cash, portfolioCurrency, rates);
     if (cashThb != null && cashThb > 0) {
       const slot = classTotals.get('cash') || { value_thb: 0, currencies: new Set() };
       slot.value_thb += cashThb;
       slot.currencies.add(portfolioCurrency);
       classTotals.set('cash', slot);
+      addToCurrency(portfolioCurrency, Number(p.cash) || 0, cashThb, false);
     }
 
     portfolioRows.push({
@@ -121,6 +149,18 @@ export async function getNetWorth(env, userId) {
     })
     .sort((a, b) => b.value_thb - a.value_thb);
 
+  // Per-currency rollup — sorted by THB value desc. Useful when the user
+  // holds across multiple currencies (เงินตราต่างประเทศ section in the card).
+  const currencyRollup = [...currencyTotals.entries()]
+    .map(([currency, v]) => ({
+      currency,
+      value_thb: v.value_thb,
+      value_native: v.value_native,
+      holding_count: v.holding_count,
+      pct: totalThb > 0 ? (v.value_thb / totalThb) * 100 : 0,
+    }))
+    .sort((a, b) => b.value_thb - a.value_thb);
+
   // If holdings total exceeds portfolios total (or vice-versa) by >5%, flag.
   if (portfoliosTotal > 0 && breakdownTotal > 0) {
     const delta = Math.abs(portfoliosTotal - breakdownTotal) / portfoliosTotal;
@@ -136,6 +176,7 @@ export async function getNetWorth(env, userId) {
     total_thb: totalThb,
     breakdown,
     portfolios: portfolioRows,
+    currency_totals: currencyRollup,
     fx: rates,
     fx_fetched_at: fxFetchedAt?.ts || null,
     warnings,

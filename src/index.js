@@ -105,11 +105,16 @@ import {
   DEFAULT_ALLOCATION,
   DEFAULT_EXPECTED_RETURN_PCT,
   expectedFutureValue,
+  impliedAnnualReturnPct,
+  monthsToTarget,
+  monthsToTargetYear,
   monthsUntil,
   parseAllocation,
   parseAmount,
   parseHorizon,
   parseYearMonth,
+  requiredAnnualReturnPct,
+  requiredMonthlyToTarget,
   solveMonthlyContribution,
   validateAllocation,
   validateExpectedReturn,
@@ -1974,6 +1979,68 @@ async function showGoal(ev, env, userId) {
   const goalForCard = currentOverride
     ? { ...goal, _currentOverride: { ym: ymNow, amount_thb: currentOverride.amount_thb } }
     : goal;
+
+  // Plan-vs-actual comparison — implied return, average DCA, projected reach
+  // year, and the "what would it take to get back on plan" adjustments.
+  // Skip when the goal is brand new (monthsElapsed === 0) — there's no
+  // history to compare against yet and the math falls back to noise.
+  const monthsRemaining = Math.max(
+    0,
+    Math.round((Date.UTC(goal.targetYear, 0, 1) - Date.now()) / (1000 * 60 * 60 * 24 * 30.4375)),
+  );
+  let comparison = null;
+  if (monthsElapsed > 0) {
+    const actualAvgMonthlyDca = monthsElapsed > 0
+      ? (Number(contributionsTotalThb) || 0) / monthsElapsed
+      : null;
+    const impliedReturn = impliedAnnualReturnPct({
+      startValue: 0,
+      contributionsTotal: contributionsTotalThb,
+      currentValue: netWorth.total_thb,
+      monthsElapsed,
+    });
+    const monthsToReach = monthsToTarget({
+      currentValue: netWorth.total_thb,
+      monthlyContribution: actualAvgMonthlyDca || goal.monthlyContributionThb,
+      expectedReturnPct: impliedReturn != null ? impliedReturn : goal.expectedReturnPct,
+      targetAmount: goal.targetAmountThb,
+    });
+    const projectedReachYear = monthsToReach != null
+      ? (monthsToReach === 0 ? new Date().getUTCFullYear() : monthsToTargetYear(monthsToReach))
+      : null;
+    const yearsBehind = projectedReachYear != null
+      ? projectedReachYear - goal.targetYear
+      : Number.POSITIVE_INFINITY;
+    const requiredMonthlyToHit = monthsRemaining > 0
+      ? requiredMonthlyToTarget({
+          currentValue: netWorth.total_thb,
+          expectedReturnPct: goal.expectedReturnPct,
+          targetAmount: goal.targetAmountThb,
+          monthsRemaining,
+        })
+      : null;
+    const requiredReturnPctToHit = monthsRemaining > 0
+      ? requiredAnnualReturnPct({
+          currentValue: netWorth.total_thb,
+          monthlyContribution: actualAvgMonthlyDca || goal.monthlyContributionThb,
+          targetAmount: goal.targetAmountThb,
+          monthsRemaining,
+        })
+      : null;
+
+    comparison = {
+      impliedReturnPct: impliedReturn,
+      plannedReturnPct: Number(goal.expectedReturnPct),
+      actualAvgMonthlyDca,
+      plannedMonthlyDca: Number(goal.monthlyContributionThb),
+      projectedReachYear,
+      plannedReachYear: Number(goal.targetYear),
+      yearsBehind: projectedReachYear != null ? yearsBehind : Number.POSITIVE_INFINITY,
+      requiredMonthlyToHit,
+      requiredReturnPctToHit,
+    };
+  }
+
   await logEvent(env, userId, 'goal_viewed', {
     goal_id: goal.id,
     net_worth_thb: Math.round(netWorth.total_thb || 0),
@@ -1981,6 +2048,9 @@ async function showGoal(ev, env, userId) {
     contributions_total_thb: Math.round(contributionsTotalThb || 0),
     months_elapsed: monthsElapsed,
     has_current_override: !!currentOverride,
+    implied_return_pct: comparison?.impliedReturnPct != null ? Number(comparison.impliedReturnPct.toFixed(2)) : null,
+    projected_reach_year: comparison?.projectedReachYear ?? null,
+    years_behind: comparison?.yearsBehind ?? null,
   });
   return reply(env, ev.replyToken, goalCard({
     goal: goalForCard,
@@ -1988,6 +2058,7 @@ async function showGoal(ev, env, userId) {
     expectedNowThb,
     contributionsTotalThb,
     monthsElapsed,
+    comparison,
   }));
 }
 

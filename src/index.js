@@ -109,6 +109,7 @@ import {
   parseAllocation,
   parseAmount,
   parseHorizon,
+  parseYearMonth,
   solveMonthlyContribution,
   validateAllocation,
   validateExpectedReturn,
@@ -528,6 +529,10 @@ async function handlePostback(ev, env, userId) {
 
   if (action === 'list-dca-overrides') {
     return showDcaOverrides(ev, env, userId);
+  }
+
+  if (action === 'dca-override-wizard') {
+    return startDcaOverrideWizard(ev, env, userId);
   }
 
   if (action === 'welcome-demo') {
@@ -1354,25 +1359,40 @@ function matchCommand(text) {
   if (editReturn) return { cmd: 'goal-edit-field', arg: { field: 'return', raw: editReturn[1].trim() } };
   const editAlloc = t.match(/^(?:ปรับสัดส่วน|edit allocation)\s+(.+)$/i);
   if (editAlloc) return { cmd: 'goal-edit-field', arg: { field: 'allocation', raw: editAlloc[1].trim() } };
-  // Per-month DCA override: "ปรับ DCA <amount> <YYYY-MM>" — must come BEFORE
-  // the standing-DCA edit regex below so the trailing YYYY-MM is preserved.
-  const overrideDca = t.match(/^(?:ปรับ\s?dca|edit dca|edit monthly)\s+(.+?)\s+(\d{4}-\d{2})$/i);
-  if (overrideDca) {
-    return {
-      cmd: 'goal-set-dca-override',
-      arg: { rawAmount: overrideDca[1].trim(), ym: overrideDca[2] },
-    };
+  // Per-month DCA override — generous about how the month gets typed. The
+  // override variant must match before the standing-amount edit so the
+  // trailing month token isn't swallowed as part of the amount.
+  //
+  // First, try the strict shape "<verb> <amount> <month-token>". The amount
+  // is a number-or-K/M shortcut at the front; everything after the next
+  // whitespace is the month token (Thai/English name, YYYY-MM, MM/YYYY,
+  // "เดือนหน้า", etc — parseYearMonth handles all of them).
+  const dcaVerb = '(?:ปรับ\\s?dca|ปรับเงินเติม|เพิ่ม\\s?dca|ตั้ง\\s?dca|set\\s?dca|edit\\s?dca|edit\\s?monthly|dca)';
+  const dcaWithMonth = t.match(new RegExp(
+    `^${dcaVerb}\\s+([\\d.,]+[MmKk]?)\\s+(.+)$`,
+    'i',
+  ));
+  if (dcaWithMonth) {
+    const ym = parseYearMonth(dcaWithMonth[2]);
+    if (ym) {
+      return {
+        cmd: 'goal-set-dca-override',
+        arg: { rawAmount: dcaWithMonth[1], ym },
+      };
+    }
   }
-  const editDca = t.match(/^(?:ปรับ\s?dca|ปรับเงินเติม|edit dca|edit monthly)\s+(.+)$/i);
+  // No recognisable month → standing-amount edit (just the number)
+  const editDca = t.match(new RegExp(`^${dcaVerb}\\s+(.+)$`, 'i'));
   if (editDca) return { cmd: 'goal-edit-field', arg: { field: 'dca', raw: editDca[1].trim() } };
 
   // List + delete DCA overrides
   if (['ดู dca', 'ดูdca', 'ตาราง dca', 'รายการ dca', 'list dca', 'dca schedule'].includes(tl)) {
     return { cmd: 'list-dca-overrides' };
   }
-  const deleteDcaMatch = t.match(/^(?:ลบ\s?dca|delete dca|remove dca)\s+(\d{4}-\d{2})$/i);
+  const deleteDcaMatch = t.match(/^(?:ลบ\s?dca|ยกเลิก\s?dca|delete dca|remove dca|clear dca)\s+(.+)$/i);
   if (deleteDcaMatch) {
-    return { cmd: 'goal-delete-dca-override', arg: { ym: deleteDcaMatch[1] } };
+    const ym = parseYearMonth(deleteDcaMatch[1]);
+    if (ym) return { cmd: 'goal-delete-dca-override', arg: { ym } };
   }
 
   // เติม <amount> [<class>]   →  log a DCA contribution
@@ -1745,6 +1765,48 @@ async function handleGoalWizardAnswer(ev, env, userId, text, state) {
     });
   }
 
+  // DCA override wizard — 2 steps: month → amount. Both inputs are run
+  // through forgiving parsers (parseYearMonth handles "มิ.ย. 2026" /
+  // "เดือนหน้า" / "2026-06" all the same; parseAmount handles "30K" /
+  // "30000" / "1.5M"). Validation errors prompt a retry without losing
+  // state, so a typo doesn't kick the user out.
+  if (state.mode === 'dca-override') {
+    if (state.step === 'month') {
+      const ym = parseYearMonth(trimmed);
+      if (!ym) {
+        return reply(env, ev.replyToken, actionAckCard({
+          tone: 'warning',
+          title: 'ไม่เข้าใจเดือนที่พิมพ์',
+          subtitle: 'พิมพ์ใหม่ เช่น "มิ.ย. 2026" / "2026-06" / "เดือนหน้า"',
+        }));
+      }
+      state.step = 'amount';
+      state.data.ym = ym;
+      await saveGoalWizardState(env, userId, state);
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'info',
+        title: `ตั้ง DCA สำหรับ ${ym}`,
+        subtitle: 'พิมพ์จำนวนเงิน เช่น "80000" หรือ "80K"',
+      }));
+    }
+    if (state.step === 'amount') {
+      const amount = parseAmount(trimmed);
+      if (!Number.isFinite(amount) || amount <= 0 || amount > 10_000_000) {
+        return reply(env, ev.replyToken, actionAckCard({
+          tone: 'warning',
+          title: 'จำนวนเงินไม่ถูกต้อง',
+          subtitle: 'พิมพ์ใหม่ เช่น "80000" หรือ "80K"',
+        }));
+      }
+      const ym = state.data.ym;
+      await deleteGoalWizardState(env, userId);
+      return setDcaOverrideHandler(ev, env, userId, {
+        rawAmount: String(amount),
+        ym,
+      });
+    }
+  }
+
   if (state.step === 'target') {
     const amount = parseAmount(trimmed);
     const err = validateTargetAmount(amount);
@@ -1903,15 +1965,24 @@ async function showGoal(ev, env, userId) {
     expectedReturnPct: goal.expectedReturnPct,
     monthsElapsed,
   });
+  // Surface the CURRENT-month DCA override on the goal card so the user
+  // sees the immediate effect of setting one (otherwise the goal card
+  // would still show the standing amount and look "not reflected").
+  const ymNow = bangkokYearMonth(new Date());
+  const currentOverride = await getDcaOverride(env, userId, goal.id, ymNow);
+  const goalForCard = currentOverride
+    ? { ...goal, _currentOverride: { ym: ymNow, amount_thb: currentOverride.amount_thb } }
+    : goal;
   await logEvent(env, userId, 'goal_viewed', {
     goal_id: goal.id,
     net_worth_thb: Math.round(netWorth.total_thb || 0),
     expected_now_thb: Math.round(expectedNowThb || 0),
     contributions_total_thb: Math.round(contributionsTotalThb || 0),
     months_elapsed: monthsElapsed,
+    has_current_override: !!currentOverride,
   });
   return reply(env, ev.replyToken, goalCard({
-    goal,
+    goal: goalForCard,
     netWorthThb: netWorth.total_thb,
     expectedNowThb,
     contributionsTotalThb,
@@ -2182,6 +2253,35 @@ async function replyEditError(ev, env, err, field) {
 // postback both consult getDcaOverride() before falling back to the
 // standing goal.monthlyContributionThb.
 // ────────────────────────────────────────────────────────────────────────
+
+async function startDcaOverrideWizard(ev, env, userId) {
+  const goal = await getActiveGoal(env, userId);
+  if (!goal) {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยังไม่ได้ตั้งเป้าหมาย',
+      subtitle: 'พิมพ์ "ตั้งเป้าหมาย" ก่อน',
+    }));
+  }
+  await saveGoalWizardState(env, userId, {
+    mode: 'dca-override',
+    step: 'month',
+    data: {},
+  });
+  await logEvent(env, userId, 'dca_override_wizard_started', { goal_id: goal.id });
+  return reply(env, ev.replyToken, actionAckCard({
+    tone: 'info',
+    title: '➕ ปรับ DCA เดือนใหม่',
+    subtitle: 'อยากปรับ DCA สำหรับเดือนไหน?',
+    lines: [
+      { text: 'พิมพ์ได้หลายแบบ:', color: '#475569' },
+      { text: '• "มิ.ย. 2026" หรือ "มิถุนายน 2026"', color: '#475569' },
+      { text: '• "2026-06" / "06/2026"', color: '#475569' },
+      { text: '• "เดือนหน้า" / "เดือนนี้"', color: '#475569' },
+      { text: 'พิมพ์ "ยกเลิก" เพื่อหยุด', color: '#94A3B8' },
+    ],
+  }));
+}
 
 async function setDcaOverrideHandler(ev, env, userId, arg) {
   const goal = await getActiveGoal(env, userId);

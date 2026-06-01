@@ -119,6 +119,126 @@ export function parseHorizon(raw) {
   return now + n;                  // it's a number of years
 }
 
+// Normalise a month string into "YYYY-MM" (Asia/Bangkok).
+//
+// Accepted inputs (case-insensitive, trim-tolerant):
+//   "2026-06"            → "2026-06"
+//   "2026/06" "06/2026"  → "2026-06"
+//   "06-2026"            → "2026-06"
+//   "มิ.ย. 2026" "มิย 2026" "มิถุนายน 2026" → "2026-06"
+//   "jun 2026" "june 2026" "Jun 2026"        → "2026-06"
+//   "เดือนหน้า" "next month" → "<next BKK month>"
+//   "เดือนนี้" "this month"   → "<current BKK month>"
+//
+// Returns null on unrecognised input.
+export function parseYearMonth(raw, now = new Date()) {
+  if (raw == null) return null;
+  const s = String(raw).trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!s) return null;
+
+  // Relative shortcuts — Bangkok-time
+  const bkkNow = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+  const bkkYear = bkkNow.getUTCFullYear();
+  const bkkMonth = bkkNow.getUTCMonth() + 1; // 1-12
+
+  if (['เดือนนี้', 'this month', 'this-month', 'current'].includes(s)) {
+    return `${bkkYear}-${String(bkkMonth).padStart(2, '0')}`;
+  }
+  if (['เดือนหน้า', 'next month', 'next-month'].includes(s)) {
+    const next = bkkMonth === 12 ? 1 : bkkMonth + 1;
+    const nextYear = bkkMonth === 12 ? bkkYear + 1 : bkkYear;
+    return `${nextYear}-${String(next).padStart(2, '0')}`;
+  }
+  if (['เดือนที่แล้ว', 'last month', 'previous month'].includes(s)) {
+    const prev = bkkMonth === 1 ? 12 : bkkMonth - 1;
+    const prevYear = bkkMonth === 1 ? bkkYear - 1 : bkkYear;
+    return `${prevYear}-${String(prev).padStart(2, '0')}`;
+  }
+
+  // Strict YYYY-MM or YYYY/MM
+  let m = s.match(/^(\d{4})[-/](\d{1,2})$/);
+  if (m) return canonical(Number(m[1]), Number(m[2]));
+
+  // MM-YYYY or MM/YYYY
+  m = s.match(/^(\d{1,2})[-/](\d{4})$/);
+  if (m) return canonical(Number(m[2]), Number(m[1]));
+
+  // Month-name + year — Thai or English. Year defaults to current Bangkok
+  // year if the user typed only the month name.
+  const monthIdx = parseMonthName(s.split(/[\s.]+/)[0]);
+  let yearTok = null;
+  if (monthIdx != null) {
+    const tokens = s.split(/[\s.]+/).filter(Boolean);
+    for (const tok of tokens) {
+      const y = Number(tok);
+      if (Number.isInteger(y) && y >= 2000 && y <= 2100) { yearTok = y; break; }
+      // Buddhist Era → CE
+      if (Number.isInteger(y) && y >= 2500 && y <= 2700) { yearTok = y - 543; break; }
+    }
+    return canonical(yearTok || bkkYear, monthIdx);
+  }
+
+  // Try "<year-name> <month-name>" order too (e.g. "2026 มิ.ย.")
+  const tokens = s.split(/[\s.]+/).filter(Boolean);
+  for (const tok of tokens) {
+    const idx = parseMonthName(tok);
+    if (idx != null) {
+      for (const tok2 of tokens) {
+        const y = Number(tok2);
+        if (Number.isInteger(y) && y >= 2000 && y <= 2100) return canonical(y, idx);
+        if (Number.isInteger(y) && y >= 2500 && y <= 2700) return canonical(y - 543, idx);
+      }
+      return canonical(bkkYear, idx);
+    }
+  }
+
+  return null;
+}
+
+function canonical(year, month) {
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) return null;
+  if (!Number.isInteger(month) || month < 1 || month > 12) return null;
+  return `${year}-${String(month).padStart(2, '0')}`;
+}
+
+const THAI_MONTH_ALIASES = {
+  มกราคม: 1,    มกรา: 1,    มกร: 1,    มค: 1,    'ม.ค': 1,    'ม.ค.': 1,
+  กุมภาพันธ์: 2, กุมภา: 2,   กพ: 2,     'ก.พ': 2,  'ก.พ.': 2,
+  มีนาคม: 3,    มีนา: 3,    มีค: 3,    'มี.ค': 3, 'มี.ค.': 3,
+  เมษายน: 4,    เมษา: 4,    เมย: 4,    'เม.ย': 4, 'เม.ย.': 4,
+  พฤษภาคม: 5,   พฤษภา: 5,   พค: 5,     'พ.ค': 5,  'พ.ค.': 5,
+  มิถุนายน: 6,  มิถุนา: 6,  มิย: 6,    'มิ.ย': 6, 'มิ.ย.': 6,
+  กรกฎาคม: 7,   กรกฎา: 7,   กค: 7,     'ก.ค': 7,  'ก.ค.': 7,
+  สิงหาคม: 8,   สิงหา: 8,   สค: 8,     'ส.ค': 8,  'ส.ค.': 8,
+  กันยายน: 9,   กันยา: 9,   กย: 9,     'ก.ย': 9,  'ก.ย.': 9,
+  ตุลาคม: 10,   ตุลา: 10,   ตค: 10,    'ต.ค': 10, 'ต.ค.': 10,
+  พฤศจิกายน: 11, พฤศจิกา: 11, พย: 11,  'พ.ย': 11, 'พ.ย.': 11,
+  ธันวาคม: 12,  ธันวา: 12,  ธค: 12,    'ธ.ค': 12, 'ธ.ค.': 12,
+};
+
+const ENGLISH_MONTH_ALIASES = {
+  january: 1,   jan: 1,
+  february: 2,  feb: 2,
+  march: 3,     mar: 3,
+  april: 4,     apr: 4,
+  may: 5,
+  june: 6,      jun: 6,
+  july: 7,      jul: 7,
+  august: 8,    aug: 8,
+  september: 9, sep: 9, sept: 9,
+  october: 10,  oct: 10,
+  november: 11, nov: 11,
+  december: 12, dec: 12,
+};
+
+function parseMonthName(tok) {
+  if (!tok) return null;
+  const norm = String(tok).toLowerCase();
+  if (ENGLISH_MONTH_ALIASES[norm] != null) return ENGLISH_MONTH_ALIASES[norm];
+  if (THAI_MONTH_ALIASES[norm] != null) return THAI_MONTH_ALIASES[norm];
+  return null;
+}
+
 // Parse the allocation answer:
 //   "default"     → DEFAULT_ALLOCATION
 //   "70 20 10"    → 0.7 / 0.2 / 0.1 (thai_equity / global_etf / cash)

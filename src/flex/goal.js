@@ -83,6 +83,18 @@ export function goalCard({ goal, netWorthThb, expectedNowThb, contributionsTotal
   body.push(planRow('เป้าหมาย', targetText));
   body.push(planRow('ภายในปี', `${goal.targetYear} (${goal.targetYear - new Date().getUTCFullYear()} ปี)`));
   body.push(planRow('เติม DCA / เดือน', fmtThb(goal.monthlyContributionThb) + ' บาท'));
+  // If there's a per-month override for the current calendar month, surface
+  // it prominently so the user sees the immediate effect of having set one.
+  if (goal._currentOverride && goal._currentOverride.amount_thb != null) {
+    const override = goal._currentOverride;
+    const diff = Number(override.amount_thb) - Number(goal.monthlyContributionThb);
+    const diffColor = diff > 0 ? '#16A34A' : diff < 0 ? '#DC2626' : '#475569';
+    body.push(planRow(
+      `↳ เดือนนี้ (${override.ym})`,
+      `${fmtThb(override.amount_thb)} บาท ${diff !== 0 ? `(${diff > 0 ? '+' : ''}${fmtThb(diff)})` : ''}`,
+      diffColor,
+    ));
+  }
   body.push(planRow('สมมุติผลตอบแทน', `${Number(goal.expectedReturnPct).toFixed(1)}% / ปี`));
 
   // DCA discipline
@@ -392,18 +404,23 @@ export function dcaOverridesCard({ goal, overrides, currentYm }) {
       footer: {
         type: 'box',
         layout: 'vertical',
+        spacing: 'sm',
         contents: [
           {
-            type: 'text',
-            text: 'พิมพ์ "ปรับ DCA <จำนวน> <YYYY-MM>" เพื่อตั้ง override เช่น "ปรับ DCA 80000 2026-06"',
-            size: 'xxs',
-            color: '#94A3B8',
-            wrap: true,
-            align: 'center',
+            type: 'button',
+            style: 'primary',
+            color: '#16A34A',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: '➕ ปรับ DCA เดือนใหม่',
+              data: 'action=dca-override-wizard',
+              displayText: 'ปรับ DCA เดือนใหม่',
+            },
           },
           {
             type: 'text',
-            text: 'พิมพ์ "ลบ DCA <YYYY-MM>" เพื่อยกเลิก override',
+            text: 'หรือพิมพ์เอง: "ปรับ DCA 80000 มิ.ย. 2026" / "ปรับ DCA 80000 เดือนหน้า"',
             size: 'xxs',
             color: '#94A3B8',
             wrap: true,

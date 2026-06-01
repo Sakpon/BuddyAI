@@ -2014,6 +2014,12 @@ async function showGoal(ev, env, userId) {
   }
   const netWorth = await getNetWorth(env, userId).catch(() => ({ total_thb: 0 }));
   const contributionsTotalThb = await getContributionsTotal(env, userId, goal.id);
+  // Value accumulated toward the goal = tracked portfolio net worth + logged
+  // DCA contributions. The goal card's progress bar uses the same sum, so the
+  // projections below stay consistent: logging a DCA moves both the bar and
+  // the projected reach year. (impliedReturn below intentionally stays on raw
+  // net worth — it measures mark-to-market growth vs deposits.)
+  const accumulatedTowardGoal = (Number(netWorth.total_thb) || 0) + (Number(contributionsTotalThb) || 0);
   const monthsElapsed = Math.max(0, Math.round((Date.now() / 1000 - goal.createdAt) / (60 * 60 * 24 * 30.4375)));
   const expectedNowThb = expectedFutureValue({
     pmt: goal.monthlyContributionThb,
@@ -2065,7 +2071,7 @@ async function showGoal(ev, env, userId) {
       ? impliedReturn
       : Number(goal.expectedReturnPct);
     const monthsToReach = monthsToTarget({
-      currentValue: netWorth.total_thb,
+      currentValue: accumulatedTowardGoal,
       monthlyContribution: monthlyForProjection,
       expectedReturnPct: returnForProjection,
       targetAmount: goal.targetAmountThb,
@@ -2078,7 +2084,7 @@ async function showGoal(ev, env, userId) {
       : Number.POSITIVE_INFINITY;
     const requiredMonthlyToHit = monthsRemaining > 0
       ? requiredMonthlyToTarget({
-          currentValue: netWorth.total_thb,
+          currentValue: accumulatedTowardGoal,
           expectedReturnPct: goal.expectedReturnPct,
           targetAmount: goal.targetAmountThb,
           monthsRemaining,
@@ -2086,7 +2092,7 @@ async function showGoal(ev, env, userId) {
       : null;
     const requiredReturnPctToHit = monthsRemaining > 0
       ? requiredAnnualReturnPct({
-          currentValue: netWorth.total_thb,
+          currentValue: accumulatedTowardGoal,
           monthlyContribution: monthlyForProjection,
           targetAmount: goal.targetAmountThb,
           monthsRemaining,

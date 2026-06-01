@@ -18,19 +18,26 @@ export function goalCard({
 }) {
   const targetText = fmtThb(goal.targetAmountThb) + ' บาท';
   const target = Number(goal.targetAmountThb) || 0;
-  const nw = Number(netWorthThb) || 0;
-  const progressPct = target > 0 ? Math.min(100, (nw / target) * 100) : 0;
+  // Progress toward the goal = tracked portfolio net worth PLUS the running
+  // total of DCA contributions the user has logged. Logging a DCA via the
+  // wizard writes to the contributions ledger but does not touch portfolio
+  // holdings, so without this sum the bar would never move until the user
+  // re-synced their portfolio. (Note: this can double-count once a freshly
+  // synced portfolio already includes the deposited money — an accepted
+  // trade-off so the bar always reflects logged DCA immediately.)
+  const accumulated = (Number(netWorthThb) || 0) + (Number(contributionsTotalThb) || 0);
+  const progressPct = target > 0 ? Math.min(100, (accumulated / target) * 100) : 0;
   const widthPct = Math.max(2, Math.round(progressPct));
 
-  // On-track / lagging / off-track status based on net worth vs the
+  // On-track / lagging / off-track status based on accumulated value vs the
   // glidepath value at month t.
   const expected = Number(expectedNowThb) || 0;
   let statusTone, statusEmoji, statusLabel;
-  if (expected <= 0 || nw >= expected * 0.95) {
+  if (expected <= 0 || accumulated >= expected * 0.95) {
     statusTone = { color: '#16A34A', bg: '#DCFCE7' };
     statusEmoji = '🟢';
     statusLabel = 'อยู่ในแผน';
-  } else if (nw >= expected * 0.75) {
+  } else if (accumulated >= expected * 0.75) {
     statusTone = { color: '#D97706', bg: '#FEF3C7' };
     statusEmoji = '🟡';
     statusLabel = 'ตามไม่ทันแผน';
@@ -63,7 +70,7 @@ export function goalCard({
       },
       {
         type: 'text',
-        text: `${fmtThb(nw)} / ${targetText}`,
+        text: `${fmtThb(accumulated)} / ${targetText}`,
         size: 'xs',
         color: '#475569',
       },

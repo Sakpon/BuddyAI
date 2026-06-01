@@ -210,6 +210,13 @@ export function goalEditMenuCard({ goal }) {
             '#16A34A',
           ),
           editFieldRow(
+            '💸',
+            'ปรับ DCA / เดือน',
+            `ตอนนี้: ${fmtThb(goal.monthlyContributionThb)} บาท / เดือน`,
+            'edit-dca',
+            '#16A34A',
+          ),
+          editFieldRow(
             '🎯',
             'ปรับสัดส่วนการลงทุน',
             allocationSummary(goal.allocationTargets),

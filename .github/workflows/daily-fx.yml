@@ -1,0 +1,39 @@
+name: Daily FX rates
+
+on:
+  schedule:
+    # 22:00 UTC = 05:00 Asia/Bangkok — runs before any user is likely to
+    # request a wealth view, so the THB net-worth uses today's rate.
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sanity-check secrets
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          CRON_KEY: ${{ secrets.CRON_KEY }}
+        run: |
+          set -eu
+          : "${WORKER_URL:?repo variable WORKER_URL missing (e.g. https://buddyai.sakpongun.workers.dev)}"
+          : "${CRON_KEY:?repo secret CRON_KEY missing — same value as the wrangler secret}"
+          echo "ready"
+
+      - name: Trigger /test-fx on the worker
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+          CRON_KEY: ${{ secrets.CRON_KEY }}
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/body -w "%{http_code}" \
+            -H "Authorization: Bearer $CRON_KEY" \
+            "${WORKER_URL%/}/test-fx")
+          echo "HTTP $code"
+          cat /tmp/body
+          echo
+          [ "$code" = "200" ]

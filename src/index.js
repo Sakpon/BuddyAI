@@ -100,7 +100,7 @@ import { extractDcaReceipt, extractFromImage, fetchLineImage } from './vision.js
 import { fetchYahooNewsForHoldings } from './news.js';
 import { fetchUnifiedQuotesForHoldings } from './marketdata.js';
 import { fetchAndStoreFxRates } from './fx.js';
-import { backfillAssetClasses, getNetWorth, reclassifyKnownUsStocks, tagSymbolClass } from './wealth.js';
+import { backfillAssetClasses, getNetWorth, reclassifyKnownUsStocks, reclassifyLegacyDefaults, tagSymbolClass } from './wealth.js';
 import { KNOWN_US_STOCKS, inferAssetClass, isValidClass, ASSET_CLASSES } from './assetclass.js';
 import { netWorthCard } from './flex/wealth.js';
 import {
@@ -2191,19 +2191,29 @@ async function confirmGoalFromWizard(ev, env, userId) {
   }));
 }
 
-// Per-user KV flag so the us_equity reclassify runs at most once per user.
-// The reclassify itself is idempotent + narrow (only flips global_etf rows
-// whose symbol is a well-known US individual stock), so re-running would
-// be a no-op — the flag just avoids the extra SQL roundtrip on every view.
-async function ensureUsEquityReclassified(env, userId) {
-  const key = `class-backfill-us-equity:${userId}`;
+// Per-user, KV-gated one-shot asset-class repair. v2 covers both the
+// original v1 case (global_etf → us_equity) AND legacy 'thai_equity'
+// rows that came in before the INSERT path learned to call
+// inferAssetClass — those rows landed on the schema default and the
+// goal card's สัดส่วน panel was bucketing AAPL/MSFT/etc. under "หุ้นไทย"
+// instead of "หุ้นสหรัฐ". A new KV key (class-backfill-v2) is used so
+// users already past v1 still get the broader repair.
+async function ensureAssetClassesRepaired(env, userId) {
+  const key = `class-backfill-v2:${userId}`;
   if (await env.SESSION_KV.get(key)) return 0;
-  const changed = await reclassifyKnownUsStocks(env, userId, KNOWN_US_STOCKS);
+  const [v1Changed, defChanged] = await Promise.all([
+    reclassifyKnownUsStocks(env, userId, KNOWN_US_STOCKS).catch(() => 0),
+    reclassifyLegacyDefaults(env, userId, inferAssetClass).catch(() => 0),
+  ]);
+  const total = (v1Changed || 0) + (defChanged || 0);
   await env.SESSION_KV.put(key, '1');
-  if (changed > 0) {
-    await logEvent(env, userId, 'us_equity_reclassified', { changed });
+  if (total > 0) {
+    await logEvent(env, userId, 'asset_classes_repaired', {
+      us_equity_from_global_etf: v1Changed || 0,
+      legacy_defaults_reclassified: defChanged || 0,
+    });
   }
-  return changed;
+  return total;
 }
 
 async function showGoal(ev, env, userId) {
@@ -2215,11 +2225,13 @@ async function showGoal(ev, env, userId) {
       subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อเริ่มต้นแผน DCA ระยะยาว',
     }));
   }
-  // One-shot migration: flip well-known US individual stocks tagged
-  // `global_etf` to the new `us_equity` class, so the proportion section
-  // shows "🇺🇸 หุ้นสหรัฐ" as its own row. Gated by a per-user KV flag so
-  // it runs at most once.
-  await ensureUsEquityReclassified(env, userId).catch(() => {});
+  // One-shot per-user asset-class repair so the สัดส่วน · แผน vs ทำจริง
+  // panel reflects the right buckets. Catches both legacy global_etf
+  // rows that should be us_equity, AND the more common case of rows
+  // sitting on the schema default ('thai_equity') because they were
+  // inserted before the INSERT path learned to call inferAssetClass.
+  // Gated by a per-user KV flag.
+  await ensureAssetClassesRepaired(env, userId).catch(() => {});
   const netWorth = await getNetWorth(env, userId).catch(() => ({ total_thb: 0, breakdown: [] }));
   const contributionsTotalThb = await getContributionsTotal(env, userId, goal.id);
   const monthsContributed = await getContributionMonthsCount(env, userId, goal.id).catch(() => 0);

@@ -1,3 +1,5 @@
+import { inferAssetClass } from './assetclass.js';
+
 export async function upsertUser(env, profile) {
   const { userId, displayName = null, pictureUrl = null, language = 'th' } = profile;
   await env.DB.prepare(
@@ -161,21 +163,26 @@ async function insertPortfolio(env, userId, p, name) {
   const holdings = Array.isArray(p.holdings) ? p.holdings : [];
   for (const h of holdings) {
     if (!h || !h.symbol) continue;
+    const sym = String(h.symbol).toUpperCase();
+    // Classify at insert time so AAPL lands in us_equity instead of falling
+    // back to the column default (thai_equity). The backfill in showGoal
+    // catches legacy rows; this prevents new rows from being mis-tagged.
     await env.DB.prepare(
       `INSERT INTO holdings
         (portfolio_id, symbol, quantity, avg_cost, market_price,
-         market_value, unrealized_pl, weight_pct)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         market_value, unrealized_pl, weight_pct, asset_class)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         portfolioId,
-        String(h.symbol).toUpperCase(),
+        sym,
         numOrNull(h.quantity),
         numOrNull(h.avg_cost),
         numOrNull(h.market_price),
         numOrNull(h.market_value),
         numOrNull(h.unrealized_pl),
         numOrNull(h.weight_pct),
+        inferAssetClass(sym),
       )
       .run();
   }
@@ -376,21 +383,24 @@ export async function updatePortfolioFromPending(env, userId, portfolioId) {
   const holdings = Array.isArray(pending.holdings) ? pending.holdings : [];
   for (const h of holdings) {
     if (!h || !h.symbol) continue;
+    const sym = String(h.symbol).toUpperCase();
+    // Classify at insert time — see note on insertPortfolio above.
     await env.DB.prepare(
       `INSERT INTO holdings
         (portfolio_id, symbol, quantity, avg_cost, market_price,
-         market_value, unrealized_pl, weight_pct)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         market_value, unrealized_pl, weight_pct, asset_class)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         portfolioId,
-        String(h.symbol).toUpperCase(),
+        sym,
         numOrNull(h.quantity),
         numOrNull(h.avg_cost),
         numOrNull(h.market_price),
         numOrNull(h.market_value),
         numOrNull(h.unrealized_pl),
         numOrNull(h.weight_pct),
+        inferAssetClass(sym),
       )
       .run();
   }

@@ -22,6 +22,7 @@ import {
   getActivePortfolio,
   getContributionsByClass,
   getContributionsThisMonth,
+  getContributionMonthsCount,
   getContributionsTotal,
   getDcaOverride,
   getDividendsTotalAllTime,
@@ -2117,8 +2118,9 @@ async function showGoal(ev, env, userId) {
       subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อเริ่มต้นแผน DCA ระยะยาว',
     }));
   }
-  const netWorth = await getNetWorth(env, userId).catch(() => ({ total_thb: 0 }));
+  const netWorth = await getNetWorth(env, userId).catch(() => ({ total_thb: 0, breakdown: [] }));
   const contributionsTotalThb = await getContributionsTotal(env, userId, goal.id);
+  const monthsContributed = await getContributionMonthsCount(env, userId, goal.id).catch(() => 0);
   // Value accumulated toward the goal = tracked portfolio net worth + logged
   // DCA contributions. The goal card's progress bar uses the same sum, so the
   // projections below stay consistent: logging a DCA moves both the bar and
@@ -2236,8 +2238,10 @@ async function showGoal(ev, env, userId) {
     netWorthThb: netWorth.total_thb,
     expectedNowThb,
     contributionsTotalThb,
+    monthsContributed,
     monthsElapsed,
     comparison,
+    actualAllocation: netWorth.breakdown || [],
   }));
 }
 

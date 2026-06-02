@@ -1305,16 +1305,10 @@ async function showPortfolioHistory(ev, env, userId) {
     return { portfolio, snapshots, isActive: p.is_active === 1 };
   }));
 
-  // If a single portfolio has no snapshots either, the active-only friendly
-  // message is more useful than a carousel of one bubble with no timeline.
-  if (items.length === 1 && items[0].snapshots.length === 0) {
-    return reply(env, ev.replyToken, actionAckCard({
-      tone: 'info',
-      title: `"${items[0].portfolio.name}" ยังไม่มีประวัติ`,
-      subtitle: 'ครั้งต่อไปที่ส่งภาพ ให้กด "อัพเดต" เพื่อเก็บ snapshot ไว้ดูย้อนหลังได้',
-    }));
-  }
-
+  // Always render the history-card flow — even when the (single) portfolio
+  // has no snapshots yet. The bubble degrades gracefully: just the "ตอนนี้"
+  // row and no summary block, with the standard update/delete footer
+  // buttons so the user can act on it from the same place.
   return reply(env, ev.replyToken, portfolioHistoryCarousel(items));
 }
 
@@ -1472,7 +1466,10 @@ function matchCommand(text) {
     return { cmd: 'rebalance-portfolio' };
   if (['เปรียบเทียบพอร์ต', 'เทียบพอร์ต', 'compare', 'compare portfolios'].includes(tl))
     return { cmd: 'compare-portfolios' };
-  if (['ประวัติพอร์ต', 'ประวัติ', 'history', 'portfolio history'].includes(tl))
+  if (['ประวัติพอร์ต', 'ประวัติ', 'ประวัติ พอร์ต', 'ประวัติพอร์ตการลงทุน',
+       'ประวัติพอร์ตของฉัน', 'ดูประวัติพอร์ต', 'ดูประวัติ',
+       'history', 'portfolio history', 'port history',
+       'portfolios history'].includes(tl))
     return { cmd: 'portfolio-history' };
   if (['สถานะหุ้น', 'สถานะ', 'status', 'holdings status'].includes(tl))
     return { cmd: 'holdings-status' };

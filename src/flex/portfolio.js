@@ -1761,6 +1761,9 @@ function buildHistoryBubble({ portfolio, snapshots, isActive = true }) {
   const display = series.slice().reverse();
 
   const totalChange = (() => {
+    // Need at least two data points for a real "since-inception" change;
+    // otherwise the summary would be "+0 / +0.0%" against itself.
+    if (series.length < 2) return null;
     const oldest = series[0];
     const newest = series[series.length - 1];
     if (!oldest || !newest || oldest.value == null || newest.value == null) return null;

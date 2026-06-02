@@ -1,4 +1,4 @@
-export function portfolioConfirmCard(extracted, activePortfolio) {
+export function portfolioConfirmCard(extracted, activePortfolio, allPortfolios = []) {
   const holdings = (extracted.holdings || []).slice(0, 10);
   const warnings = extracted.warnings || [];
   const rows = holdings.map((h) => holdingRow(h, false));
@@ -6,19 +6,32 @@ export function portfolioConfirmCard(extracted, activePortfolio) {
     ? [{ type: 'text', text: `+ อีก ${extracted.holdings.length - 10} ตัว`, size: 'xs', color: '#94A3B8', margin: 'sm' }]
     : [];
 
-  const updateButton = activePortfolio
-    ? [{
-        type: 'button',
-        style: 'primary',
-        color: '#0EA5E9',
-        action: {
-          type: 'postback',
-          label: `อัพเดต "${(activePortfolio.name || 'พอร์ต').slice(0, 20)}"`,
-          data: `action=update-portfolio&id=${activePortfolio.id}`,
-          displayText: `อัพเดต "${(activePortfolio.name || 'พอร์ต').slice(0, 20)}"`,
-        },
-      }]
-    : [];
+  // When the user has multiple portfolios, render an "อัพเดต" button per
+  // existing portfolio (active first, cap 3) so they can pick which one
+  // this screenshot belongs to. With a single portfolio we keep the
+  // legacy behavior of one button bound to the active.
+  const portfoliosForButtons = allPortfolios.length > 0
+    ? [...allPortfolios]
+        .sort((a, b) => {
+          const aActive = a.is_active === 1 ? 1 : 0;
+          const bActive = b.is_active === 1 ? 1 : 0;
+          if (aActive !== bActive) return bActive - aActive;
+          return (b.taken_at || 0) - (a.taken_at || 0);
+        })
+        .slice(0, 3)
+    : (activePortfolio ? [activePortfolio] : []);
+
+  const updateButtons = portfoliosForButtons.map((p) => ({
+    type: 'button',
+    style: 'primary',
+    color: p.is_active === 1 ? '#0EA5E9' : '#475569',
+    action: {
+      type: 'postback',
+      label: `อัพเดต "${(p.name || 'พอร์ต').slice(0, 20)}"`,
+      data: `action=update-portfolio&id=${p.id}`,
+      displayText: `อัพเดต "${(p.name || 'พอร์ต').slice(0, 20)}"`,
+    },
+  }));
 
   return {
     type: 'flex',
@@ -67,7 +80,7 @@ export function portfolioConfirmCard(extracted, activePortfolio) {
               displayText: 'บันทึกเป็นพอร์ตใหม่',
             },
           },
-          ...updateButton,
+          ...updateButtons,
           {
             type: 'button',
             style: 'secondary',

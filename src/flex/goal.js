@@ -10,11 +10,18 @@ export function goalCard({
   netWorthThb,
   expectedNowThb,
   contributionsTotalThb,
+  // Distinct calendar months with at least one logged DCA (Asia/Bangkok).
+  // Used by section 3's "จำนวนเดือนที่เติม DCA" line.
+  monthsContributed = 0,
   monthsElapsed,
   // Optional plan-vs-actual analytics computed in showGoal. When omitted
   // (e.g. updateGoalFields preview, monthsElapsed=0) the comparison
   // section is skipped to avoid showing noisy zero-data rows.
   comparison = null,
+  // Optional actual allocation breakdown from getNetWorth — array of
+  // { class, label, emoji, color, value_thb, pct, ... }. Drives the
+  // planned vs actual comparison rows in the allocation section.
+  actualAllocation = [],
 }) {
   const targetText = fmtThb(goal.targetAmountThb) + ' บาท';
   const target = Number(goal.targetAmountThb) || 0;
@@ -96,7 +103,7 @@ export function goalCard({
   // ── Section 2 · 🎯 ตามแผน ─────────────────────────────────────────────
   const yearsLeft = goal.targetYear - new Date().getUTCFullYear();
   const targetItems = [
-    sectionHeader('🎯 ตามแผน', 'สิ่งที่คุณตั้งใจไว้'),
+    sectionHeader('🎯 แผนที่ตั้งไว้', 'สิ่งที่คุณตั้งใจไว้'),
     kvRow('ยอดเป้าหมาย', `${targetText}`),
     kvRow('ภายในปี', `${goal.targetYear}  (อีก ${yearsLeft} ปี)`),
     kvRow('DCA / เดือน', `${fmtThb(goal.monthlyContributionThb)} บาท`),
@@ -115,47 +122,18 @@ export function goalCard({
   body.push({ type: 'separator', margin: 'md' });
   body.push(sectionPanel('#0EA5E912', targetItems));
 
-  // ── Section 3 · 📈 ทำได้จริง ──────────────────────────────────────────
+  // ── Section 3 · 📈 ทำได้จริง — two bullets only ───────────────────────
+  const actualContribTotal = Number(contributionsTotalThb) || 0;
   const actualItems = [
-    sectionHeader(
-      '📈 ทำได้จริง',
-      monthsElapsed > 0
-        ? `ติดตามมา ${monthsElapsed} เดือน`
-        : 'เพิ่งเริ่ม — รอเก็บประวัติ DCA',
-    ),
-    kvRow('มูลค่าพอร์ตตอนนี้', `${fmtThb(netWorthThb)} บาท`),
+    sectionHeader('📈 ทำได้จริง', 'สิ่งที่คุณทำมาแล้ว'),
   ];
-  if (monthsElapsed > 0) {
-    const actual = Number(contributionsTotalThb) || 0;
-    const expectedDcaTotal = Number(goal.monthlyContributionThb) * monthsElapsed;
-    const adherencePct = expectedDcaTotal > 0 ? Math.min(100, (actual / expectedDcaTotal) * 100) : null;
-    const adherenceTone = adherencePct == null
-      ? '#475569'
-      : adherencePct >= 90 ? '#16A34A' : adherencePct >= 60 ? '#D97706' : '#DC2626';
-    actualItems.push(kvRow(
-      'DCA ที่เติมแล้ว',
-      `${fmtThb(actual)} บาท${adherencePct != null ? ` (${Math.round(adherencePct)}% ของแผน)` : ''}`,
-      adherenceTone,
-    ));
-    if (comparison?.actualAvgMonthlyDca != null) {
-      actualItems.push(kvRow(
-        'DCA เฉลี่ย / เดือน',
-        `${fmtThb(comparison.actualAvgMonthlyDca)} บาท`,
-      ));
-    }
-    if (comparison?.impliedReturnPct != null) {
-      const delta = comparison.impliedReturnPct - comparison.plannedReturnPct;
-      const tone = delta >= -0.5 ? '#16A34A' : delta >= -2 ? '#D97706' : '#DC2626';
-      actualItems.push(kvRow(
-        'ผลตอบแทนจริง',
-        `${comparison.impliedReturnPct.toFixed(1)}% / ปี  (${delta >= 0 ? '+' : ''}${delta.toFixed(1)}pp)`,
-        tone,
-      ));
-    }
+  if (actualContribTotal > 0 || monthsContributed > 0) {
+    actualItems.push(bulletRow('💸', 'DCA ที่เติมแล้ว', `${fmtThb(actualContribTotal)} บาท`));
+    actualItems.push(bulletRow('📅', 'จำนวนเดือนที่เติม DCA', `${monthsContributed} เดือน`));
   } else {
     actualItems.push({
       type: 'text',
-      text: 'พอเริ่มเติม DCA เดือนแรก ระบบจะเริ่มเก็บประวัติให้',
+      text: 'ยังไม่มีการเติม DCA — เริ่มเดือนนี้ได้เลยจากปุ่มด้านล่าง',
       size: 'xxs', color: '#94A3B8', wrap: true, margin: 'sm',
     });
   }
@@ -227,24 +205,45 @@ export function goalCard({
   body.push({ type: 'separator', margin: 'md' });
   body.push(sectionPanel(statusTone.bg, summaryItems));
 
-  // ── Section 5 · Allocation targets (unchanged) ──────────────────────
+  // ── Section 5 · 🥧 สัดส่วน — planned vs actual ───────────────────────
   const alloc = goal.allocationTargets || {};
   const allocEntries = Object.entries(alloc).filter(([, pct]) => Number(pct) > 0);
   if (allocEntries.length) {
+    // Lookup actual % per class from getNetWorth's breakdown. Classes
+    // present in the portfolio but not in the plan get appended at the end
+    // so the user sees "off-plan" holdings (e.g. crypto in a non-crypto
+    // plan) explicitly.
+    const actualByClass = new Map();
+    for (const b of (actualAllocation || [])) {
+      if (b?.class) actualByClass.set(b.class, Number(b.pct) || 0);
+    }
+    const plannedClasses = new Set(allocEntries.map(([cls]) => cls));
+    const extraActual = (actualAllocation || []).filter(
+      (b) => b?.class && !plannedClasses.has(b.class) && Number(b.pct) > 0.5,
+    );
+
     body.push({ type: 'separator', margin: 'md' });
-    body.push({ type: 'text', text: '🎯 สัดส่วนเป้าหมาย', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    body.push({
+      type: 'text',
+      text: '🥧 สัดส่วน · แผน vs ทำจริง',
+      weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md',
+    });
+    // Two-column header
+    body.push({
+      type: 'box',
+      layout: 'horizontal',
+      margin: 'sm',
+      contents: [
+        { type: 'text', text: ' ', size: 'xxs', flex: 5 },
+        { type: 'text', text: 'แผน', size: 'xxs', color: '#94A3B8', align: 'end', flex: 2 },
+        { type: 'text', text: 'ทำจริง', size: 'xxs', color: '#94A3B8', align: 'end', flex: 2 },
+      ],
+    });
     for (const [cls, pct] of allocEntries) {
-      const meta = ASSET_CLASSES[cls] || ASSET_CLASSES.other;
-      body.push({
-        type: 'box',
-        layout: 'horizontal',
-        margin: 'sm',
-        contents: [
-          { type: 'text', text: meta.emoji, size: 'sm', flex: 0 },
-          { type: 'text', text: meta.label, size: 'sm', color: '#1E293B', flex: 5, margin: 'sm' },
-          { type: 'text', text: `${Math.round(Number(pct) * 100)}%`, size: 'sm', weight: 'bold', color: meta.color, align: 'end', flex: 2 },
-        ],
-      });
+      body.push(allocCompareRow(cls, Number(pct) * 100, actualByClass.get(cls) ?? 0));
+    }
+    for (const b of extraActual) {
+      body.push(allocCompareRow(b.class, 0, Number(b.pct) || 0));
     }
   }
 
@@ -764,6 +763,72 @@ function sectionHeader(title, subtitle) {
       ...(subtitle
         ? [{ type: 'text', text: subtitle, size: 'xxs', color: '#475569' }]
         : []),
+    ],
+  };
+}
+
+// Two-line bullet — emoji on the left, big value on the right, label
+// underneath. Used by section 3's "ทำได้จริง" two-bullet view.
+function bulletRow(emoji, label, value, valueColor) {
+  return {
+    type: 'box',
+    layout: 'horizontal',
+    margin: 'sm',
+    spacing: 'md',
+    contents: [
+      { type: 'text', text: emoji, size: 'xl', flex: 0, gravity: 'center' },
+      {
+        type: 'box',
+        layout: 'vertical',
+        flex: 5,
+        spacing: 'xs',
+        contents: [
+          { type: 'text', text: label, size: 'xxs', color: '#475569' },
+          {
+            type: 'text',
+            text: String(value || '—'),
+            size: 'md',
+            weight: 'bold',
+            color: valueColor || '#0F172A',
+          },
+        ],
+      },
+    ],
+  };
+}
+
+// Allocation row — planned % | actual % side-by-side with the delta color
+// telegraphing how far off the user is from the target weight.
+function allocCompareRow(cls, plannedPct, actualPct) {
+  const meta = ASSET_CLASSES[cls] || ASSET_CLASSES.other;
+  const delta = actualPct - plannedPct;
+  const tone = Math.abs(delta) <= 5 ? '#16A34A'
+    : Math.abs(delta) <= 15 ? '#D97706'
+    : '#DC2626';
+  return {
+    type: 'box',
+    layout: 'horizontal',
+    margin: 'sm',
+    contents: [
+      { type: 'text', text: meta.emoji, size: 'sm', flex: 0 },
+      { type: 'text', text: meta.label, size: 'sm', color: '#1E293B', flex: 5, margin: 'sm' },
+      {
+        type: 'text',
+        text: plannedPct > 0 ? `${Math.round(plannedPct)}%` : '—',
+        size: 'sm',
+        color: '#94A3B8',
+        align: 'end',
+        flex: 2,
+      },
+      {
+        type: 'text',
+        text: actualPct > 0 ? `${Math.round(actualPct)}%` : '—',
+        size: 'sm',
+        weight: 'bold',
+        color: tone,
+        align: 'end',
+        flex: 2,
+      },
     ],
   };
 }

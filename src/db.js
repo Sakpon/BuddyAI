@@ -1216,6 +1216,20 @@ export async function getContributionsTotal(env, userId, goalId) {
   return Number(row?.total || 0);
 }
 
+// Count of distinct calendar months (Asia/Bangkok) that have at least one
+// contribution. Drives the "📅 จำนวนเดือนที่เติม DCA" line on the goal card,
+// which is more useful than monthsElapsed for showing actual discipline.
+export async function getContributionMonthsCount(env, userId, goalId) {
+  if (!goalId) return 0;
+  const row = await env.DB.prepare(
+    `SELECT COUNT(DISTINCT strftime('%Y-%m', contributed_at + 25200, 'unixepoch')) AS n
+       FROM contributions WHERE user_id = ? AND goal_id = ?`,
+  )
+    .bind(userId, goalId)
+    .first();
+  return Number(row?.n || 0);
+}
+
 // Per-class contribution split — drives the "DCA adherence by class" view.
 export async function getContributionsByClass(env, userId, goalId) {
   if (!goalId) return {};

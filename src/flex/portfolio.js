@@ -1726,7 +1726,9 @@ function buildHistoryBubble({ portfolio, snapshots, isActive = true }) {
   const series = [];
   for (const s of list.slice().reverse()) {
     series.push({
-      label: fmtDate(s.taken_at),
+      // Include time so users can tell apart multiple updates on the same
+      // calendar day.
+      label: fmtDate(s.taken_at, { withTime: true }),
       // Stored snapshot total is null when Claude vision couldn't read a
       // total from the screenshot (Dime!/Grab Invest etc). Sum the
       // archived holdings as a fallback so the row shows a real number
@@ -1737,7 +1739,7 @@ function buildHistoryBubble({ portfolio, snapshots, isActive = true }) {
     });
   }
   series.push({
-    label: fmtDate(portfolio.taken_at),
+    label: fmtDate(portfolio.taken_at, { withTime: true }),
     // Same fallback for the current row — requires the caller to supply
     // portfolio.holdings (showPortfolioHistory does).
     value: numOrNullValue(portfolio.total_value) ?? sumHoldingValues(portfolio.holdings),
@@ -1772,9 +1774,14 @@ function buildHistoryBubble({ portfolio, snapshots, isActive = true }) {
 
   if (totalChange) {
     const color = totalChange.abs >= 0 ? '#16A34A' : '#DC2626';
+    const sign = totalChange.abs >= 0 ? '+' : '';
+    // Percentage is the headline — absolute baht is secondary. When pct can't
+    // be computed (oldest value was 0 or null), fall back to leading with the
+    // amount.
     const pctText = totalChange.pct != null
-      ? `${totalChange.abs >= 0 ? '+' : ''}${totalChange.pct.toFixed(1)}%`
-      : '—';
+      ? `${sign}${totalChange.pct.toFixed(1)}%`
+      : null;
+    const amtText = `${sign}${fmtMoney(totalChange.abs)} บาท`;
     body.push({
       type: 'box',
       layout: 'vertical',
@@ -1786,12 +1793,14 @@ function buildHistoryBubble({ portfolio, snapshots, isActive = true }) {
         { type: 'text', text: 'ผลตั้งแต่เริ่มเก็บประวัติ', size: 'xs', color: '#475569' },
         {
           type: 'text',
-          text: `${totalChange.abs >= 0 ? '+' : ''}${fmtMoney(totalChange.abs)}`,
-          size: 'xl',
+          text: pctText || amtText,
+          size: 'xxl',
           weight: 'bold',
           color,
         },
-        { type: 'text', text: pctText, size: 'sm', weight: 'bold', color },
+        ...(pctText
+          ? [{ type: 'text', text: amtText, size: 'sm', color }]
+          : []),
       ],
     });
   }
@@ -1835,11 +1844,43 @@ function buildHistoryBubble({ portfolio, snapshots, isActive = true }) {
               },
             }]
           : []),
+        // Per-portfolio update + delete, side by side. Both route to
+        // confirmation cards before any destructive / state-changing work
+        // actually happens.
+        {
+          type: 'box',
+          layout: 'horizontal',
+          spacing: 'sm',
+          contents: [
+            {
+              type: 'button',
+              style: 'secondary',
+              height: 'sm',
+              flex: 3,
+              action: {
+                type: 'postback',
+                label: '🔄 อัพเดต',
+                data: `action=confirm-update-portfolio&id=${portfolio.id}`,
+                displayText: `อัพเดต ${portfolio.name || 'พอร์ต'}`,
+              },
+            },
+            {
+              type: 'button',
+              style: 'secondary',
+              height: 'sm',
+              flex: 2,
+              action: {
+                type: 'postback',
+                label: '🗑 ลบ',
+                data: `action=confirm-delete-portfolio&id=${portfolio.id}`,
+                displayText: `ลบ ${portfolio.name || 'พอร์ต'}`,
+              },
+            },
+          ],
+        },
         {
           type: 'text',
-          text: isActive
-            ? 'ส่งภาพพอร์ตล่าสุดแล้วกด "อัพเดต" เพื่อเก็บ snapshot ใหม่'
-            : 'แตะปุ่มด้านบนเพื่อสลับมาใช้พอร์ตนี้',
+          text: 'ทุกการเปลี่ยนแปลงจะถามยืนยันก่อน',
           size: 'xxs',
           color: '#94A3B8',
           wrap: true,
@@ -1850,28 +1891,126 @@ function buildHistoryBubble({ portfolio, snapshots, isActive = true }) {
   };
 }
 
+// Confirmation card with two outcomes (confirm + cancel). Used for the
+// per-portfolio "อัพเดต" and "ลบ" actions in the history card.
+//
+//   tone        : 'warning' | 'danger' | 'info'  (default 'warning')
+//   title       : header text
+//   subtitle    : secondary description
+//   lines       : extra context lines under the subtitle
+//   confirm     : { label, data, displayText, color? }
+//   cancelLabel : optional override for "ยกเลิก"
+export function confirmActionCard({
+  tone = 'warning',
+  title,
+  subtitle,
+  lines = [],
+  confirm,
+  cancelLabel = 'ยกเลิก',
+}) {
+  const TONE = {
+    warning: { bar: '#D97706', tint: '#D9770614', icon: '⚠' },
+    danger:  { bar: '#DC2626', tint: '#DC262614', icon: '⚠' },
+    info:    { bar: '#0EA5E9', tint: '#0EA5E914', icon: 'ℹ︎' },
+  };
+  const t = TONE[tone] || TONE.warning;
+  const body = [
+    {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: t.tint,
+      cornerRadius: '10px',
+      paddingAll: '12px',
+      spacing: 'xs',
+      contents: [
+        {
+          type: 'box',
+          layout: 'horizontal',
+          spacing: 'sm',
+          contents: [
+            { type: 'text', text: t.icon, size: 'lg', color: t.bar, flex: 0 },
+            { type: 'text', text: title, size: 'md', weight: 'bold', color: t.bar, wrap: true, flex: 5 },
+          ],
+        },
+        ...(subtitle
+          ? [{ type: 'text', text: subtitle, size: 'xs', color: '#475569', wrap: true, margin: 'sm' }]
+          : []),
+      ],
+    },
+  ];
+  if (lines.length) {
+    body.push({ type: 'separator', margin: 'md' });
+    for (const line of lines) {
+      body.push({ type: 'text', text: String(line), size: 'sm', color: '#1E293B', wrap: true });
+    }
+  }
+  return {
+    type: 'flex',
+    altText: title,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: body },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: confirm.color || t.bar,
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: confirm.label,
+              data: confirm.data,
+              displayText: confirm.displayText || confirm.label,
+            },
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: cancelLabel,
+              data: 'action=noop',
+              displayText: cancelLabel,
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
 function historyRow(row) {
   const isCurrent = row.isCurrent;
   const bg = isCurrent ? '#0EA5E914' : '#F8FAFC';
   const dateColor = isCurrent ? '#0EA5E9' : '#475569';
-  const valueText = row.value != null ? fmtMoney(row.value) : '—';
+  const valueText = row.value != null ? `฿${fmtMoney(row.value)}` : '—';
   // LINE Flex returns 400 on empty text fields and silently drops the whole
   // reply — fall back to "—" instead of "" for missing meta/delta.
   const meta = isCurrent
     ? 'ตอนนี้'
     : (row.count != null ? `${row.count} ตัว` : '—');
   const hasDelta = row.delta != null;
+  const sign = hasDelta && row.delta >= 0 ? '+' : '';
   const deltaAmtText = hasDelta
-    ? `${row.delta >= 0 ? '+' : ''}${fmtMoney(row.delta)}`
-    : '—';
+    ? `${sign}${fmtMoney(row.delta)} บาท`
+    : null;
   const deltaPctText = hasDelta && row.deltaPct != null
-    ? `${row.delta >= 0 ? '+' : ''}${row.deltaPct.toFixed(1)}%`
-    : '—';
+    ? `${sign}${row.deltaPct.toFixed(1)}%`
+    : null;
   const deltaColor = !hasDelta ? '#94A3B8' : row.delta >= 0 ? '#16A34A' : '#DC2626';
 
-  // Stack the delta on its own line beneath the value, with amount and percent
-  // also stacked vertically. Two-column layouts with both on one line truncate
-  // when numbers go above ~100k (LINE doesn't wrap small text by default).
+  // Layout, top-to-bottom:
+  //   1) date · meta line
+  //   2) BIG percentage delta (the headline — what the user is asked to
+  //      prioritise over absolute amounts). Falls back to baht amount when
+  //      pct isn't computable (first row, or previous value was 0).
+  //   3) secondary line: portfolio value · amount delta in baht
   return {
     type: 'box',
     layout: 'vertical',
@@ -1884,23 +2023,30 @@ function historyRow(row) {
         type: 'box',
         layout: 'horizontal',
         contents: [
-          { type: 'text', text: row.label, size: 'xs', weight: 'bold', color: dateColor, flex: 3 },
+          { type: 'text', text: row.label, size: 'xs', weight: 'bold', color: dateColor, flex: 3, wrap: true },
           { type: 'text', text: meta, size: 'xxs', color: '#94A3B8', align: 'end', flex: 2 },
         ],
       },
       {
         type: 'text',
-        text: valueText,
-        size: 'lg',
+        text: deltaPctText || deltaAmtText || '—',
+        size: 'xxl',
         weight: 'bold',
-        color: '#0F172A',
+        color: deltaColor,
       },
       {
         type: 'box',
         layout: 'horizontal',
         contents: [
-          { type: 'text', text: deltaAmtText, size: 'xs', weight: 'bold', color: deltaColor, flex: 1 },
-          { type: 'text', text: deltaPctText, size: 'xs', weight: 'bold', color: deltaColor, align: 'end', flex: 1 },
+          { type: 'text', text: valueText, size: 'xs', color: '#475569', flex: 3 },
+          {
+            type: 'text',
+            text: deltaPctText ? (deltaAmtText || '—') : '—',
+            size: 'xs',
+            color: deltaColor,
+            align: 'end',
+            flex: 2,
+          },
         ],
       },
     ],
@@ -2129,7 +2275,7 @@ function portfolioListRow(p) {
             action: {
               type: 'postback',
               label: 'ลบ',
-              data: `action=delete-portfolio&id=${p.id}`,
+              data: `action=confirm-delete-portfolio&id=${p.id}`,
               displayText: `ลบ ${p.name || 'พอร์ต'}`,
             },
           },

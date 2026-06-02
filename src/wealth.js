@@ -132,6 +132,12 @@ export async function getNetWorth(env, userId) {
   const breakdownTotal = [...classTotals.values()].reduce((s, v) => s + v.value_thb, 0);
   const portfoliosTotal = portfolioRows.reduce((s, p) => s + (p.total_thb || 0), 0);
   const totalThb = portfoliosTotal > 0 ? portfoliosTotal : breakdownTotal;
+  // Proportions ALWAYS divide by the sum of the buckets they describe,
+  // independent of the wealth headline. Otherwise, when portfoliosTotal
+  // disagrees with breakdownTotal (e.g. Claude vision read a stale total
+  // figure while live-quoted holdings sum higher), the per-class % can
+  // exceed 100% — which broke the goal card's "แผน vs ทำจริง" comparison.
+  const pctDenom = breakdownTotal > 0 ? breakdownTotal : totalThb;
 
   // Build the breakdown array sorted by value desc.
   const breakdown = [...classTotals.entries()]
@@ -143,7 +149,7 @@ export async function getNetWorth(env, userId) {
         emoji: meta.emoji,
         color: meta.color,
         value_thb: v.value_thb,
-        pct: totalThb > 0 ? (v.value_thb / totalThb) * 100 : 0,
+        pct: pctDenom > 0 ? (v.value_thb / pctDenom) * 100 : 0,
         currency_mix: [...v.currencies],
       };
     })
@@ -157,7 +163,7 @@ export async function getNetWorth(env, userId) {
       value_thb: v.value_thb,
       value_native: v.value_native,
       holding_count: v.holding_count,
-      pct: totalThb > 0 ? (v.value_thb / totalThb) * 100 : 0,
+      pct: pctDenom > 0 ? (v.value_thb / pctDenom) * 100 : 0,
     }))
     .sort((a, b) => b.value_thb - a.value_thb);
 

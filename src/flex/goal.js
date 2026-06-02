@@ -49,7 +49,7 @@ export function goalCard({
 
   const body = [];
 
-  // Status banner
+  // ── Section 1 · Progress bar + status banner ─────────────────────────
   body.push({
     type: 'box',
     layout: 'vertical',
@@ -74,7 +74,6 @@ export function goalCard({
         size: 'xs',
         color: '#475569',
       },
-      // Progress bar
       {
         type: 'box',
         layout: 'vertical',
@@ -94,65 +93,146 @@ export function goalCard({
     ],
   });
 
-  // Plan summary
-  body.push({ type: 'separator', margin: 'md' });
-  body.push({ type: 'text', text: 'แผนการลงทุน', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
-  body.push(planRow('เป้าหมาย', targetText));
-  body.push(planRow('ภายในปี', `${goal.targetYear} (${goal.targetYear - new Date().getUTCFullYear()} ปี)`));
-  body.push(planRow('เติม DCA / เดือน', fmtThb(goal.monthlyContributionThb) + ' บาท'));
-  // If there's a per-month override for the current calendar month, surface
-  // it prominently so the user sees the immediate effect of having set one.
+  // ── Section 2 · 🎯 ตามแผน ─────────────────────────────────────────────
+  const yearsLeft = goal.targetYear - new Date().getUTCFullYear();
+  const targetItems = [
+    sectionHeader('🎯 ตามแผน', 'สิ่งที่คุณตั้งใจไว้'),
+    kvRow('ยอดเป้าหมาย', `${targetText}`),
+    kvRow('ภายในปี', `${goal.targetYear}  (อีก ${yearsLeft} ปี)`),
+    kvRow('DCA / เดือน', `${fmtThb(goal.monthlyContributionThb)} บาท`),
+  ];
   if (goal._currentOverride && goal._currentOverride.amount_thb != null) {
-    const override = goal._currentOverride;
-    const diff = Number(override.amount_thb) - Number(goal.monthlyContributionThb);
+    const o = goal._currentOverride;
+    const diff = Number(o.amount_thb) - Number(goal.monthlyContributionThb);
     const diffColor = diff > 0 ? '#16A34A' : diff < 0 ? '#DC2626' : '#475569';
-    body.push(planRow(
-      `↳ เดือนนี้ (${override.ym})`,
-      `${fmtThb(override.amount_thb)} บาท ${diff !== 0 ? `(${diff > 0 ? '+' : ''}${fmtThb(diff)})` : ''}`,
+    targetItems.push(kvRow(
+      `↳ เดือนนี้ (${o.ym})`,
+      `${fmtThb(o.amount_thb)} บาท${diff !== 0 ? ` (${diff > 0 ? '+' : ''}${fmtThb(diff)})` : ''}`,
       diffColor,
     ));
   }
-  body.push(planRow('สมมุติผลตอบแทน', `${Number(goal.expectedReturnPct).toFixed(1)}% / ปี`));
+  targetItems.push(kvRow('สมมุติผลตอบแทน', `${Number(goal.expectedReturnPct).toFixed(1)}% / ปี`));
+  body.push({ type: 'separator', margin: 'md' });
+  body.push(sectionPanel('#0EA5E912', targetItems));
 
-  // DCA discipline
+  // ── Section 3 · 📈 ทำได้จริง ──────────────────────────────────────────
+  const actualItems = [
+    sectionHeader(
+      '📈 ทำได้จริง',
+      monthsElapsed > 0
+        ? `ติดตามมา ${monthsElapsed} เดือน`
+        : 'เพิ่งเริ่ม — รอเก็บประวัติ DCA',
+    ),
+    kvRow('มูลค่าพอร์ตตอนนี้', `${fmtThb(netWorthThb)} บาท`),
+  ];
   if (monthsElapsed > 0) {
-    const expectedDcaTotal = Number(goal.monthlyContributionThb) * monthsElapsed;
     const actual = Number(contributionsTotalThb) || 0;
-    const adherencePct = expectedDcaTotal > 0
-      ? Math.min(100, (actual / expectedDcaTotal) * 100)
-      : null;
-    body.push({ type: 'separator', margin: 'md' });
-    body.push({ type: 'text', text: 'DCA วินัย', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
-    body.push(planRow('เติมจริงสะสม', fmtThb(actual) + ' บาท'));
-    body.push(planRow('ควรเติมแล้ว', fmtThb(expectedDcaTotal) + ' บาท'));
-    if (adherencePct != null) {
-      body.push(planRow('วินัย', `${Math.round(adherencePct)}%`, adherencePct >= 90 ? '#16A34A' : '#D97706'));
+    const expectedDcaTotal = Number(goal.monthlyContributionThb) * monthsElapsed;
+    const adherencePct = expectedDcaTotal > 0 ? Math.min(100, (actual / expectedDcaTotal) * 100) : null;
+    const adherenceTone = adherencePct == null
+      ? '#475569'
+      : adherencePct >= 90 ? '#16A34A' : adherencePct >= 60 ? '#D97706' : '#DC2626';
+    actualItems.push(kvRow(
+      'DCA ที่เติมแล้ว',
+      `${fmtThb(actual)} บาท${adherencePct != null ? ` (${Math.round(adherencePct)}% ของแผน)` : ''}`,
+      adherenceTone,
+    ));
+    if (comparison?.actualAvgMonthlyDca != null) {
+      actualItems.push(kvRow(
+        'DCA เฉลี่ย / เดือน',
+        `${fmtThb(comparison.actualAvgMonthlyDca)} บาท`,
+      ));
     }
-  }
-
-  // Plan vs actual — bolted on as a tinted callout panel so the data jumps
-  // out from the surrounding plan/discipline sections. Only renders when
-  // showGoal supplied the precomputed comparison object.
-  if (comparison) {
-    body.push({ type: 'separator', margin: 'md' });
-    body.push({
-      type: 'box',
-      layout: 'vertical',
-      backgroundColor: '#0EA5E912',
-      cornerRadius: '10px',
-      paddingAll: '12px',
-      spacing: 'sm',
-      margin: 'md',
-      contents: comparisonBlock(comparison, goal),
+    if (comparison?.impliedReturnPct != null) {
+      const delta = comparison.impliedReturnPct - comparison.plannedReturnPct;
+      const tone = delta >= -0.5 ? '#16A34A' : delta >= -2 ? '#D97706' : '#DC2626';
+      actualItems.push(kvRow(
+        'ผลตอบแทนจริง',
+        `${comparison.impliedReturnPct.toFixed(1)}% / ปี  (${delta >= 0 ? '+' : ''}${delta.toFixed(1)}pp)`,
+        tone,
+      ));
+    }
+  } else {
+    actualItems.push({
+      type: 'text',
+      text: 'พอเริ่มเติม DCA เดือนแรก ระบบจะเริ่มเก็บประวัติให้',
+      size: 'xxs', color: '#94A3B8', wrap: true, margin: 'sm',
     });
   }
+  body.push({ type: 'separator', margin: 'md' });
+  body.push(sectionPanel('#F8FAFC', actualItems));
 
-  // Allocation targets
+  // ── Section 4 · 🚦 สรุป — on-track? เร็วช้าแค่ไหน? ──────────────────
+  const summaryItems = [
+    sectionHeader('🚦 สรุป', 'อยู่ในแผนไหม · เร็วช้าแค่ไหน'),
+    {
+      type: 'box',
+      layout: 'horizontal',
+      spacing: 'sm',
+      margin: 'sm',
+      contents: [
+        { type: 'text', text: statusEmoji, size: 'xxl', flex: 0 },
+        {
+          type: 'box',
+          layout: 'vertical',
+          flex: 6,
+          contents: [
+            { type: 'text', text: statusLabel, weight: 'bold', size: 'md', color: statusTone.color },
+            { type: 'text', text: `ความคืบหน้า ${Math.round(progressPct)}%`, size: 'xxs', color: '#475569' },
+          ],
+        },
+      ],
+    },
+  ];
+  if (comparison?.projectedReachYear != null && comparison?.plannedReachYear != null) {
+    const yb = comparison.yearsBehind;
+    const reachLabel = comparison.projectedReachYear === Infinity
+      ? 'ไม่ถึงเป้าด้วยอัตรานี้'
+      : String(comparison.projectedReachYear);
+    let trail, trailColor;
+    if (yb === 0) { trail = '· ตรงตามแผน'; trailColor = '#16A34A'; }
+    else if (yb > 0) { trail = `· ช้ากว่าแผน ${Math.abs(yb)} ปี`; trailColor = yb <= 1 ? '#D97706' : '#DC2626'; }
+    else { trail = `· เร็วกว่าแผน ${Math.abs(yb)} ปี`; trailColor = '#16A34A'; }
+    summaryItems.push(kvRow('ปีที่จะถึงเป้า', `${reachLabel} ${trail}`, trailColor));
+  } else if (comparison?.projectedReachYear === null) {
+    summaryItems.push({
+      type: 'text',
+      text: '⚠️ อัตรานี้ไม่พอจะถึงเป้า — ต้องเพิ่ม DCA หรือผลตอบแทน',
+      size: 'xs', color: '#DC2626', wrap: true, margin: 'sm',
+    });
+  }
+  const isBehind = comparison && (comparison.yearsBehind > 0 || comparison.projectedReachYear === null);
+  if (isBehind) {
+    if (comparison.requiredMonthlyToHit != null && Number.isFinite(comparison.requiredMonthlyToHit)) {
+      summaryItems.push(kvRow(
+        'ถ้าจะให้ทันแผน',
+        `เติม ${fmtThb(comparison.requiredMonthlyToHit)} บาท / เดือน`,
+        '#DC2626',
+      ));
+    }
+    if (comparison.requiredReturnPctToHit != null) {
+      summaryItems.push(kvRow(
+        'หรือผลตอบแทนต้องได้',
+        `${comparison.requiredReturnPctToHit.toFixed(1)}% / ปี`,
+        '#DC2626',
+      ));
+    }
+  } else if (comparison && comparison.yearsBehind < 0) {
+    summaryItems.push({
+      type: 'text',
+      text: '🎉 ทำได้เร็วกว่าแผน — คงระดับนี้ไว้',
+      size: 'xs', color: '#16A34A', wrap: true, margin: 'sm',
+    });
+  }
+  body.push({ type: 'separator', margin: 'md' });
+  body.push(sectionPanel(statusTone.bg, summaryItems));
+
+  // ── Section 5 · Allocation targets (unchanged) ──────────────────────
   const alloc = goal.allocationTargets || {};
   const allocEntries = Object.entries(alloc).filter(([, pct]) => Number(pct) > 0);
   if (allocEntries.length) {
     body.push({ type: 'separator', margin: 'md' });
-    body.push({ type: 'text', text: 'สัดส่วนเป้าหมาย', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
+    body.push({ type: 'text', text: '🎯 สัดส่วนเป้าหมาย', weight: 'bold', size: 'sm', color: '#0F172A', margin: 'md' });
     for (const [cls, pct] of allocEntries) {
       const meta = ASSET_CLASSES[cls] || ASSET_CLASSES.other;
       body.push({
@@ -659,162 +739,51 @@ function planRow(label, value, color) {
   };
 }
 
-// "🔍 เปรียบเทียบแผน vs ทำจริง" — assembled from precomputed comparison object:
-//   {
-//     impliedReturnPct,       // actual annualised return so far (number | null)
-//     plannedReturnPct,
-//     actualAvgMonthlyDca,    // contributionsTotal / monthsElapsed
-//     plannedMonthlyDca,
-//     projectedReachYear,     // calendar year at current pace
-//     plannedReachYear,
-//     yearsBehind,            // negative = ahead of plan
-//     requiredMonthlyToHit,   // PMT needed now to still hit original year
-//     requiredReturnPctToHit, // % needed if PMT stays as-is
-//   }
-function comparisonBlock(c, goal) {
-  // New-goal mode: no investment history yet, so the "vs ทำจริง" framing
-  // doesn't apply. Show the projection-only view with a different title
-  // and a softer subtitle so the user understands why the actual columns
-  // are missing.
-  const title = c.isNewGoal
-    ? '📊 ภาพรวมแผน · ตามเงินที่มีอยู่ตอนนี้'
-    : '🔍 เปรียบเทียบแผน vs ทำจริง';
-
-  const items = [
-    {
-      type: 'text',
-      text: title,
-      weight: 'bold',
-      size: 'sm',
-      color: '#0F172A',
-      wrap: true,
-    },
-  ];
-
-  if (c.isNewGoal) {
-    items.push({
-      type: 'text',
-      text: 'ยังไม่มีประวัติเติม DCA — บอท คาดการณ์จากเงินที่คุณมีอยู่ ณ ตอนนี้ + DCA ที่วางแผนไว้',
-      wrap: true,
-      size: 'xxs',
-      color: '#475569',
-    });
-  }
-
-  // Return %
-  if (c.impliedReturnPct != null) {
-    const delta = c.impliedReturnPct - c.plannedReturnPct;
-    const tone = delta >= -0.5 ? '#16A34A' : delta >= -2 ? '#D97706' : '#DC2626';
-    items.push(compareRow(
-      'ผลตอบแทน / ปี',
-      `${c.plannedReturnPct.toFixed(1)}%`,
-      `${c.impliedReturnPct.toFixed(1)}%`,
-      `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}pp`,
-      tone,
-    ));
-  }
-
-  // DCA done
-  if (c.actualAvgMonthlyDca != null) {
-    const pct = c.plannedMonthlyDca > 0
-      ? (c.actualAvgMonthlyDca / c.plannedMonthlyDca) * 100
-      : null;
-    const tone = pct == null
-      ? '#475569'
-      : pct >= 90 ? '#16A34A' : pct >= 60 ? '#D97706' : '#DC2626';
-    items.push(compareRow(
-      'DCA เฉลี่ย / เดือน',
-      fmtThb(c.plannedMonthlyDca),
-      fmtThb(c.actualAvgMonthlyDca),
-      pct != null ? `${Math.round(pct)}%` : '—',
-      tone,
-    ));
-  }
-
-  // Reach year
-  if (c.projectedReachYear != null && c.plannedReachYear != null) {
-    const yearsBehind = c.yearsBehind;
-    const tone = yearsBehind <= 0 ? '#16A34A' : yearsBehind <= 1 ? '#D97706' : '#DC2626';
-    const trailLabel = yearsBehind === 0
-      ? 'ตรงแผน'
-      : yearsBehind > 0
-        ? `ช้ากว่า ${Math.abs(yearsBehind)} ปี`
-        : `เร็วกว่า ${Math.abs(yearsBehind)} ปี`;
-    items.push(compareRow(
-      'ปีที่ถึงเป้า',
-      String(c.plannedReachYear),
-      c.projectedReachYear === Infinity ? 'ไม่ถึง' : String(c.projectedReachYear),
-      trailLabel,
-      tone,
-      c.isNewGoal ? 'คาดการณ์' : 'ทำได้',
-    ));
-  } else if (c.projectedReachYear === null) {
-    items.push({
-      type: 'text',
-      text: '⚠️ ที่อัตรานี้ DCA + ผลตอบแทน ไม่พอที่จะถึงเป้า — ต้องเพิ่ม DCA หรือผลตอบแทน',
-      wrap: true,
-      size: 'xxs',
-      color: '#DC2626',
-    });
-  }
-
-  // Required adjustments (only when behind)
-  const isBehind = c.yearsBehind > 0 || c.projectedReachYear === null;
-  if (isBehind && (c.requiredMonthlyToHit != null || c.requiredReturnPctToHit != null)) {
-    items.push({ type: 'separator', margin: 'sm' });
-    items.push({
-      type: 'text',
-      text: 'ถ้าจะให้ทันแผน:',
-      size: 'xs',
-      weight: 'bold',
-      color: '#475569',
-    });
-    if (c.requiredMonthlyToHit != null && Number.isFinite(c.requiredMonthlyToHit)) {
-      items.push({
-        type: 'text',
-        text: `• เติม DCA เพิ่มเป็น ${fmtThb(c.requiredMonthlyToHit)} บาท/เดือน (ที่ ${c.plannedReturnPct.toFixed(1)}% เดิม)`,
-        wrap: true,
-        size: 'xxs',
-        color: '#1E293B',
-      });
-    }
-    if (c.requiredReturnPctToHit != null) {
-      items.push({
-        type: 'text',
-        text: `• หรือทำผลตอบแทนเฉลี่ย ${c.requiredReturnPctToHit.toFixed(1)}% / ปี (DCA เดิม ${fmtThb(goal.monthlyContributionThb)} บาท)`,
-        wrap: true,
-        size: 'xxs',
-        color: '#1E293B',
-      });
-    }
-  } else if (!isBehind && c.yearsBehind < 0) {
-    items.push({
-      type: 'text',
-      text: '🎉 ทำได้เร็วกว่าแผน — คงระดับนี้ไว้',
-      size: 'xxs',
-      color: '#16A34A',
-      wrap: true,
-    });
-  }
-
-  return items;
+// goalCard section helpers — tinted panels keep each of the four sections
+// (Target / Actual / Summary) visually distinct without adding noise.
+function sectionPanel(bgColor, contents) {
+  return {
+    type: 'box',
+    layout: 'vertical',
+    backgroundColor: bgColor,
+    cornerRadius: '10px',
+    paddingAll: '12px',
+    spacing: 'xs',
+    margin: 'md',
+    contents,
+  };
 }
 
-function compareRow(label, planValue, actualValue, deltaText, color, actualLabel = 'ทำได้') {
+function sectionHeader(title, subtitle) {
   return {
     type: 'box',
     layout: 'vertical',
     spacing: 'xs',
     contents: [
-      { type: 'text', text: label, size: 'xxs', color: '#475569' },
+      { type: 'text', text: title, weight: 'bold', size: 'md', color: '#0F172A' },
+      ...(subtitle
+        ? [{ type: 'text', text: subtitle, size: 'xxs', color: '#475569' }]
+        : []),
+    ],
+  };
+}
+
+function kvRow(label, value, valueColor) {
+  return {
+    type: 'box',
+    layout: 'horizontal',
+    margin: 'sm',
+    contents: [
+      { type: 'text', text: label, size: 'sm', color: '#475569', flex: 4 },
       {
-        type: 'box',
-        layout: 'horizontal',
-        contents: [
-          { type: 'text', text: `แผน ${planValue}`, size: 'xs', color: '#94A3B8', flex: 3 },
-          { type: 'text', text: `${actualLabel} ${actualValue}`, size: 'xs', weight: 'bold', color: '#0F172A', align: 'center', flex: 3 },
-          { type: 'text', text: deltaText, size: 'xs', weight: 'bold', color: color || '#475569', align: 'end', flex: 2 },
-        ],
+        type: 'text',
+        text: String(value || '—'),
+        size: 'sm',
+        weight: 'bold',
+        color: valueColor || '#0F172A',
+        align: 'end',
+        flex: 6,
+        wrap: true,
       },
     ],
   };

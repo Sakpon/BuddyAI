@@ -1727,14 +1727,20 @@ function buildHistoryBubble({ portfolio, snapshots, isActive = true }) {
   for (const s of list.slice().reverse()) {
     series.push({
       label: fmtDate(s.taken_at),
-      value: numOrNullValue(s.total_value),
+      // Stored snapshot total is null when Claude vision couldn't read a
+      // total from the screenshot (Dime!/Grab Invest etc). Sum the
+      // archived holdings as a fallback so the row shows a real number
+      // instead of "—".
+      value: numOrNullValue(s.total_value) ?? sumHoldingValues(s.holdings),
       count: (s.holdings || []).length,
       isCurrent: false,
     });
   }
   series.push({
     label: fmtDate(portfolio.taken_at),
-    value: numOrNullValue(portfolio.total_value),
+    // Same fallback for the current row — requires the caller to supply
+    // portfolio.holdings (showPortfolioHistory does).
+    value: numOrNullValue(portfolio.total_value) ?? sumHoldingValues(portfolio.holdings),
     count: null,
     isCurrent: true,
   });
@@ -2017,6 +2023,28 @@ function numOrNullValue(v) {
   if (v == null) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+// Fallback total when portfolios.total_value / portfolio_snapshots.total_value
+// is null (Claude vision didn't find a total figure). Sum market_value, or
+// quantity × market_price when market_value is missing. Returns null when
+// nothing useful can be summed so the row stays "—" rather than showing 0.
+function sumHoldingValues(holdings) {
+  if (!Array.isArray(holdings) || !holdings.length) return null;
+  let sum = 0;
+  let any = false;
+  for (const h of holdings || []) {
+    if (!h) continue;
+    let v = h.market_value != null ? Number(h.market_value) : null;
+    if ((v == null || !Number.isFinite(v)) && h.quantity != null && h.market_price != null) {
+      v = Number(h.quantity) * Number(h.market_price);
+    }
+    if (v != null && Number.isFinite(v)) {
+      sum += v;
+      any = true;
+    }
+  }
+  return any ? sum : null;
 }
 
 // Centralised date formatter. Forces the Gregorian calendar so the year is

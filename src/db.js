@@ -137,6 +137,12 @@ async function insertPortfolio(env, userId, p, name) {
     `UPDATE portfolios SET is_active = 0 WHERE user_id = ?`,
   ).bind(userId).run();
 
+  // Backfill total_value from the sum of holdings when Claude vision missed
+  // the total figure on the screenshot. Keeps the success card, history
+  // timeline, and any other consumer of portfolios.total_value from
+  // showing "—".
+  const totalValue = numOrNull(p.total_value) ?? sumHoldingValuesForSave(p.holdings);
+
   const stmt = env.DB.prepare(
     `INSERT INTO portfolios (user_id, name, source, total_value, cash, notes, is_active)
      VALUES (?, ?, ?, ?, ?, ?, 1)`,
@@ -144,7 +150,7 @@ async function insertPortfolio(env, userId, p, name) {
     userId,
     name,
     p.source || null,
-    numOrNull(p.total_value),
+    totalValue,
     numOrNull(p.cash),
     p.warnings && p.warnings.length ? JSON.stringify(p.warnings) : null,
   );
@@ -319,19 +325,29 @@ export async function updatePortfolioFromPending(env, userId, portfolioId) {
     .bind(portfolioId)
     .all();
 
+  // Backfill the archived snapshot's total_value from the holdings being
+  // archived so historic timeline points stay numeric even when the
+  // original screenshot didn't give us a total.
+  const archivedTotal = current.total_value != null
+    ? current.total_value
+    : sumHoldingValuesForSave(currentHoldings);
+
   const snapInsert = await env.DB.prepare(
     `INSERT INTO portfolio_snapshots (portfolio_id, total_value, cash, notes, holdings_json)
      VALUES (?, ?, ?, ?, ?)`,
   )
     .bind(
       portfolioId,
-      current.total_value,
+      archivedTotal,
       current.cash,
       current.notes,
       JSON.stringify(currentHoldings || []),
     )
     .run();
   const snapshotId = snapInsert?.meta?.last_row_id || null;
+
+  // Same backfill for the incoming totals.
+  const newTotal = numOrNull(pending.total_value) ?? sumHoldingValuesForSave(pending.holdings);
 
   // Overwrite portfolio totals.
   await env.DB.prepare(
@@ -345,7 +361,7 @@ export async function updatePortfolioFromPending(env, userId, portfolioId) {
   )
     .bind(
       pending.source || null,
-      numOrNull(pending.total_value),
+      newTotal,
       numOrNull(pending.cash),
       pending.warnings && pending.warnings.length ? JSON.stringify(pending.warnings) : null,
       portfolioId,
@@ -1259,6 +1275,32 @@ function numOrNull(v) {
   if (v === null || v === undefined || v === '') return null;
   const n = typeof v === 'number' ? v : Number(String(v).replace(/,/g, ''));
   return Number.isFinite(n) ? n : null;
+}
+
+// Sum of holdings' market_value (or quantity × market_price fallback). Used
+// at portfolio insert/update time to backfill portfolios.total_value /
+// portfolio_snapshots.total_value when the screenshot didn't surface a
+// total figure (Dime!/Grab Invest layouts are a common case). Returns null
+// when nothing useful can be summed so we don't claim a portfolio is worth
+// 0 baht.
+function sumHoldingValuesForSave(holdings) {
+  if (!Array.isArray(holdings) || !holdings.length) return null;
+  let sum = 0;
+  let any = false;
+  for (const h of holdings) {
+    if (!h) continue;
+    let v = numOrNull(h.market_value);
+    if (v == null) {
+      const q = numOrNull(h.quantity);
+      const p = numOrNull(h.market_price);
+      v = (q != null && p != null) ? q * p : null;
+    }
+    if (v != null) {
+      sum += v;
+      any = true;
+    }
+  }
+  return any ? sum : null;
 }
 
 // ────────────────────────────────────────────────────────────────────────

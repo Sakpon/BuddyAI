@@ -1200,8 +1200,16 @@ async function showPortfolioHistory(ev, env, userId) {
   });
 
   const items = await Promise.all(sorted.map(async (p) => {
-    const snapshots = await getPortfolioSnapshots(env, userId, p.id, 20).catch(() => []);
-    return { portfolio: p, snapshots, isActive: p.is_active === 1 };
+    // Fetch holdings alongside snapshots so the history card can fall back
+    // to sum(holdings.market_value) when portfolios.total_value is null —
+    // happens whenever Claude vision couldn't read a total from the
+    // screenshot (e.g. some Dime!/Grab Invest layouts).
+    const [snapshots, withHoldings] = await Promise.all([
+      getPortfolioSnapshots(env, userId, p.id, 20).catch(() => []),
+      getPortfolioWithHoldings(env, userId, p.id).catch(() => null),
+    ]);
+    const portfolio = { ...p, holdings: withHoldings?.holdings || [] };
+    return { portfolio, snapshots, isActive: p.is_active === 1 };
   }));
 
   // If a single portfolio has no snapshots either, the active-only friendly

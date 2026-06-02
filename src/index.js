@@ -129,6 +129,8 @@ import {
   amountAskCard,
   dcaLogInfoCard,
   dcaLogResultCard,
+  dcaOfferCard,
+  dcaSlipConfirmCard,
   dcaWarningCard,
 } from './flex/dcaLog.js';
 import {
@@ -420,17 +422,24 @@ async function handlePostback(ev, env, userId) {
         holdingCount: (saved?.holdings || []).length,
       }));
     }
-    return reply(env, ev.replyToken, actionAckCard({
-      title: `บันทึก "${saved?.portfolio?.name || 'พอร์ต'}" แล้ว`,
-      subtitle: 'ตั้งเป็นพอร์ตที่ใช้งานปัจจุบันแล้ว',
-      lines: [
-        { label: 'หุ้น', value: String((saved?.holdings || []).length) + ' ตัว' },
-        ...(saved?.portfolio?.total_value != null
-          ? [{ label: 'มูลค่ารวม', value: Number(saved.portfolio.total_value).toLocaleString('en-US') }]
-          : []),
-        { text: 'พิมพ์ "ความมั่งคั่ง" เพื่อดูสรุปทรัพย์สิน หรือ "เป้าหมาย" เพื่อดูแผน DCA', color: '#475569' },
-      ],
-    }));
+    return reply(env, ev.replyToken, [
+      actionAckCard({
+        title: `บันทึก "${saved?.portfolio?.name || 'พอร์ต'}" แล้ว`,
+        subtitle: 'ตั้งเป็นพอร์ตที่ใช้งานปัจจุบันแล้ว',
+        lines: [
+          { label: 'หุ้น', value: String((saved?.holdings || []).length) + ' ตัว' },
+          ...(saved?.portfolio?.total_value != null
+            ? [{ label: 'มูลค่ารวม', value: Number(saved.portfolio.total_value).toLocaleString('en-US') }]
+            : []),
+        ],
+      }),
+      dcaOfferCard({
+        title: 'บันทึกเป็น DCA เดือนนี้ด้วยไหม?',
+        subtitle: 'ถ้าเงินที่อยู่ในพอร์ตนี้คือเงิน DCA เดือนนี้ ระบบจะบันทึกให้',
+        confirmLabel: '✓ บันทึก DCA เดือนนี้',
+        confirmData: 'action=goal-log-monthly',
+      }),
+    ]);
   }
 
   if (action === 'update-portfolio') {
@@ -452,17 +461,25 @@ async function handlePostback(ev, env, userId) {
       total_value: updated?.portfolio?.total_value ?? null,
       symbols: (updated?.holdings || []).map((h) => h.symbol),
     });
-    return reply(env, ev.replyToken, actionAckCard({
-      title: `อัพเดต "${updated?.portfolio?.name || 'พอร์ต'}" แล้ว`,
-      subtitle: 'เก็บ snapshot เดิมไว้ในประวัติเรียบร้อย',
-      lines: [
-        { label: 'หุ้น', value: String((updated?.holdings || []).length) + ' ตัว' },
-        ...(updated?.portfolio?.total_value != null
-          ? [{ label: 'มูลค่ารวมล่าสุด', value: Number(updated.portfolio.total_value).toLocaleString('en-US') }]
-          : []),
-      ],
-      cta: { label: 'ดูประวัติพอร์ต', data: 'action=show-portfolio-history' },
-    }));
+    return reply(env, ev.replyToken, [
+      actionAckCard({
+        title: `อัพเดต "${updated?.portfolio?.name || 'พอร์ต'}" แล้ว`,
+        subtitle: 'เก็บ snapshot เดิมไว้ในประวัติเรียบร้อย',
+        lines: [
+          { label: 'หุ้น', value: String((updated?.holdings || []).length) + ' ตัว' },
+          ...(updated?.portfolio?.total_value != null
+            ? [{ label: 'มูลค่ารวมล่าสุด', value: Number(updated.portfolio.total_value).toLocaleString('en-US') }]
+            : []),
+        ],
+        cta: { label: 'ดูประวัติพอร์ต', data: 'action=show-portfolio-history' },
+      }),
+      dcaOfferCard({
+        title: 'บันทึกเป็น DCA เดือนนี้ด้วยไหม?',
+        subtitle: 'ถ้าคุณเพิ่งเติม DCA แล้วอัพเดตพอร์ต จะบันทึกเป็นการเติมเดือนนี้ก็ได้',
+        confirmLabel: '✓ บันทึก DCA เดือนนี้',
+        confirmData: 'action=goal-log-monthly',
+      }),
+    ]);
   }
 
   if (action === 'retry-portfolio') {
@@ -651,6 +668,38 @@ async function handlePostback(ev, env, userId) {
       subtitle: 'พิมพ์ "เป้าหมาย" เพื่อกลับไปที่การ์ดเป้าหมาย',
     }));
   }
+  // From the post-import "บันทึกเป็น DCA เดือนนี้" CTA. Starts the wizard
+  // pre-filled with the buy-side total + the asset class inferred from the
+  // imported symbols, then runs through proceedAfterDcaAmount so the
+  // large-amount / duplicate-month warnings still apply.
+  if (action === 'dca-from-buys') {
+    return startDcaLogFromBuys(ev, env, userId, {
+      amount: Number(data.get('amount')),
+      assetClass: data.get('class') || null,
+      symbol: data.get('symbol') || null,
+    });
+  }
+  // From the slip-confirmation card — user wants to pick a class manually
+  // rather than accept the one the slip suggested.
+  if (action === 'dca-log-pick-class') {
+    const state = await getDcaLogWizardState(env, userId);
+    if (!state || !state.data?.amount) {
+      return reply(env, ev.replyToken, dcaLogInfoCard({
+        tone: 'warning',
+        title: 'หมดเวลายืนยัน',
+        subtitle: 'แตะ "บันทึก DCA เดือนนี้" ใหม่อีกครั้ง',
+      }));
+    }
+    delete state.data.suggestedClass;
+    delete state.data.suggestedSymbol;
+    delete state.data.slipDescription;
+    await saveDcaLogWizardState(env, userId, state);
+    return reply(env, ev.replyToken, allocationAskCard({
+      amount: state.data.amount,
+      ym: state.data.ym,
+      allocation: state.data.allocation,
+    }));
+  }
 
   if (action === 'goal-edit') {
     const field = data.get('field');
@@ -712,12 +761,41 @@ async function handlePostback(ev, env, userId) {
       errors: result.errors.length,
       error_reasons: result.errors.map((e) => e.error),
     });
-    return reply(env, ev.replyToken, transactionsImportResultCard({
-      portfolioName: active.portfolio.name || null,
-      applied: result.applied,
-      skipped: result.skipped,
-      errors: result.errors,
-    }));
+
+    // Sum the BUY-side transactions and infer the dominant asset class from
+    // the imported symbols. If anything plausible came out, offer a one-tap
+    // "log this as DCA this month" follow-up that pre-fills the wizard via
+    // the new dca-from-buys postback.
+    const buys = (result.applied || []).filter((t) => String(t.side || '').toLowerCase() === 'buy');
+    const buyAmount = buys.reduce((s, t) => {
+      const q = Number(t.quantity);
+      const p = Number(t.price);
+      return s + (Number.isFinite(q) && Number.isFinite(p) ? q * p : 0);
+    }, 0);
+    const dominantSymbol = buys[0]?.symbol ? String(buys[0].symbol).toUpperCase() : null;
+    const dominantClass = dominantSymbol ? inferAssetClass(dominantSymbol) : null;
+    const offerCard = (buyAmount > 0)
+      ? [dcaOfferCard({
+          title: 'บันทึกเป็น DCA เดือนนี้ด้วยไหม?',
+          subtitle: dominantSymbol
+            ? `รายการซื้อ ${dominantSymbol} รวม ฿${Math.round(buyAmount).toLocaleString('en-US')}`
+            : `ยอดซื้อรวม ฿${Math.round(buyAmount).toLocaleString('en-US')}`,
+          confirmLabel: '✓ บันทึก DCA เดือนนี้',
+          confirmData: `action=dca-from-buys&amount=${Math.round(buyAmount)}`
+            + (dominantClass ? `&class=${dominantClass}` : '')
+            + (dominantSymbol ? `&symbol=${encodeURIComponent(dominantSymbol).slice(0, 24)}` : ''),
+        })]
+      : [];
+
+    return reply(env, ev.replyToken, [
+      transactionsImportResultCard({
+        portfolioName: active.portfolio.name || null,
+        applied: result.applied,
+        skipped: result.skipped,
+        errors: result.errors,
+      }),
+      ...offerCard,
+    ]);
   }
 
   if (action === 'retry-transactions-import') {
@@ -774,9 +852,13 @@ async function handleImage(ev, env, userId, messageId) {
     warnings: extracted.warnings || [],
   });
   const active = await getActivePortfolio(env, userId).catch(() => null);
+  const allPortfolios = await listPortfolios(env, userId).catch(() => []);
+  const multiHint = allPortfolios.length > 1
+    ? `อ่านพอร์ตจากภาพแล้ว — คุณมี ${allPortfolios.length} พอร์ต เลือกว่าจะอัพเดตพอร์ตไหน หรือบันทึกเป็นพอร์ตใหม่`
+    : 'อ่านพอร์ตจากภาพแล้ว ตรวจสอบความถูกต้องและกดบันทึกเพื่อเริ่มใช้งานได้เลยครับ';
   await push(env, userId, [
-    textMsg('อ่านพอร์ตจากภาพแล้ว ตรวจสอบความถูกต้องและกดบันทึกเพื่อเริ่มใช้งานได้เลยครับ'),
-    portfolioConfirmCard(extracted, active?.portfolio || null),
+    textMsg(multiHint),
+    portfolioConfirmCard(extracted, active?.portfolio || null, allPortfolios),
   ]);
 }
 
@@ -2798,6 +2880,64 @@ async function startDcaLogWizard(ev, env, userId) {
   }));
 }
 
+// Starts the DCA wizard with amount + class already known (used by the
+// post-transactions-import follow-up). Bootstraps the same state shape as
+// startDcaLogWizard but immediately routes through proceedAfterDcaAmount
+// so the user lands on the slip-confirm card (when a class was inferred)
+// or the standard allocation chooser otherwise.
+async function startDcaLogFromBuys(ev, env, userId, { amount, assetClass, symbol }) {
+  const goal = await getActiveGoal(env, userId);
+  if (!goal) {
+    return reply(env, ev.replyToken, dcaLogInfoCard({
+      tone: 'warning',
+      title: 'ยังไม่มีเป้าหมาย',
+      subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อตั้งก่อน',
+    }));
+  }
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0) {
+    return reply(env, ev.replyToken, dcaLogInfoCard({
+      tone: 'warning',
+      title: 'จำนวนเงินไม่ถูกต้อง',
+      subtitle: 'ลองกด "บันทึก DCA เดือนนี้" จากการ์ดเป้าหมายแทน',
+    }));
+  }
+  const ym = bangkokYearMonth(new Date());
+  const override = await getDcaOverride(env, userId, goal.id, ym);
+  const plannedAmount = override?.amount_thb ?? Number(goal.monthlyContributionThb);
+
+  const cls = isValidClass(assetClass) ? assetClass : null;
+  const state = {
+    step: 'amount',
+    data: {
+      ym,
+      plannedAmount,
+      isOverride: !!override,
+      allocation: goal.allocationTargets || {},
+      goalId: goal.id,
+      ...(cls
+        ? {
+            suggestedClass: cls,
+            suggestedSymbol: symbol ? String(symbol).slice(0, 24) : null,
+            slipDescription: symbol ? `ซื้อ ${symbol} จากภาพรายการซื้อขาย` : null,
+          }
+        : {}),
+    },
+  };
+  await saveDcaLogWizardState(env, userId, state);
+  await logEvent(env, userId, 'dca_log_wizard_started', {
+    goal_id: goal.id,
+    ym,
+    planned_amount: plannedAmount,
+    is_override: !!override,
+    via: 'from-buys',
+    seed_amount: Math.round(amt),
+    seed_class: cls,
+    seed_symbol: symbol || null,
+  });
+  return proceedAfterDcaAmount(env, userId, state, amt, (msg) => reply(env, ev.replyToken, msg));
+}
+
 // A DCA ≥ this share of the tracked portfolio (net worth) is flagged as
 // "unusually large" — almost always a typo (฿300,000 instead of ฿30,000).
 const DCA_LARGE_PORTFOLIO_PCT = 0.30;
@@ -2852,6 +2992,22 @@ async function proceedAfterDcaAmount(env, userId, state, amount, send) {
   state.data.amount = amt;
   delete state.data.warnings;
   await saveDcaLogWizardState(env, userId, state);
+
+  // Fast-path: when Claude vision identified a clear asset class from the
+  // slip (e.g. "ซื้อ KFUSA" → thai_fund, "Bought SPY" → global_etf), skip
+  // the generic allocation chooser and offer a one-tap confirmation
+  // bound to that class. Falls back to the standard chooser when no
+  // class was inferred.
+  const suggested = state.data?.suggestedClass;
+  if (suggested && isValidClass(suggested)) {
+    return send(dcaSlipConfirmCard({
+      amount: amt,
+      ym: state.data.ym,
+      suggestedClass: suggested,
+      symbol: state.data.suggestedSymbol || null,
+      description: state.data.slipDescription || null,
+    }));
+  }
   return send(allocationAskCard({
     amount: amt,
     ym: state.data.ym,
@@ -2897,6 +3053,17 @@ async function confirmDcaWarning(ev, env, userId) {
     goal_id: state.data.goalId,
     amount_thb: Math.round(Number(state.data.amount)),
   });
+  // Honor the slip-detected class on the post-warning path too.
+  const suggested = state.data?.suggestedClass;
+  if (suggested && isValidClass(suggested)) {
+    return reply(env, ev.replyToken, dcaSlipConfirmCard({
+      amount: state.data.amount,
+      ym: state.data.ym,
+      suggestedClass: suggested,
+      symbol: state.data.suggestedSymbol || null,
+      description: state.data.slipDescription || null,
+    }));
+  }
   return reply(env, ev.replyToken, allocationAskCard({
     amount: state.data.amount,
     ym: state.data.ym,
@@ -2938,13 +3105,27 @@ async function finalizeDcaLog(ev, env, userId, { kind, singleClass }) {
     }
   }
 
-  // Persist each slice as its own row
+  // Persist each slice as its own row. When the slip auto-classified into
+  // this exact class we also stamp the symbol into the note so the user
+  // can audit "what did the bot read this from".
+  const slipSymbol = state.data?.suggestedSymbol || null;
+  const slipClass = state.data?.suggestedClass || null;
   for (const b of breakdown) {
+    let notes;
+    if (kind === 'auto') {
+      notes = 'wizard:auto-split';
+    } else if (slipClass && slipClass === b.class) {
+      notes = slipSymbol
+        ? `wizard:slip:${b.class}:${slipSymbol}`
+        : `wizard:slip:${b.class}`;
+    } else {
+      notes = `wizard:single:${b.class}`;
+    }
     await recordContribution(env, userId, {
       goalId,
       assetClass: b.class,
       amountThb: b.amount_thb,
-      notes: kind === 'auto' ? 'wizard:auto-split' : `wizard:single:${b.class}`,
+      notes,
     });
   }
 
@@ -2954,6 +3135,8 @@ async function finalizeDcaLog(ev, env, userId, { kind, singleClass }) {
     goal_id: goalId, amount_thb: amount,
     asset_class: kind === 'single' ? singleClass : 'auto-split',
     via: 'wizard',
+    from_slip: !!slipClass,
+    slip_symbol: slipSymbol,
     breakdown: breakdown.map((b) => ({ class: b.class, amount_thb: Math.round(b.amount_thb) })),
   });
   return reply(env, ev.replyToken, dcaLogResultCard({
@@ -3023,9 +3206,25 @@ async function handleDcaLogImage(ev, env, userId, messageId, state) {
       subtitle: 'ลองส่งภาพที่คมชัดขึ้น หรือพิมพ์ตัวเลขเอง',
     }));
   }
+  // Stash the asset-class / symbol Claude inferred so proceedAfterDcaAmount
+  // can fast-path to the slip-confirmation card instead of asking the user
+  // to pick an allocation. Only trust classes the system knows about.
+  const suggestedClass = isValidClass(extracted?.asset_class) ? extracted.asset_class : null;
+  if (suggestedClass) {
+    state.data.suggestedClass = suggestedClass;
+    state.data.suggestedSymbol = extracted.symbol ? String(extracted.symbol).slice(0, 24) : null;
+    state.data.slipDescription = extracted.description ? String(extracted.description).slice(0, 80) : null;
+    await saveDcaLogWizardState(env, userId, state);
+  } else {
+    delete state.data.suggestedClass;
+    delete state.data.suggestedSymbol;
+    delete state.data.slipDescription;
+  }
   await logEvent(env, userId, 'dca_log_image_parsed', {
     amount_thb: amt,
     description: extracted.description || null,
+    asset_class: suggestedClass,
+    symbol: extracted?.symbol || null,
   });
   // Advance with the parsed amount through the shared continuation so the
   // same large-amount / duplicate-month warnings apply to slip uploads.

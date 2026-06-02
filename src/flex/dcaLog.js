@@ -226,6 +226,107 @@ export function allocationAskCard({ amount, ym, allocation }) {
   };
 }
 
+// Slip-confirmation card — shown when Claude vision identifies BOTH the
+// amount AND the asset class from the uploaded slip / buy confirmation.
+// One-tap "บันทึก" goes straight to the same single-class allocation
+// postback the manual flow uses.
+//
+//   amount         — the parsed amount in THB
+//   ym             — current Bangkok year-month
+//   suggestedClass — asset_class detected from the slip
+//   symbol         — ticker / fund name if visible (string|null)
+//   description    — short description from vision ('ซื้อกองทุน KFUSA' etc.)
+export function dcaSlipConfirmCard({ amount, ym, suggestedClass, symbol, description }) {
+  const amt = Number(amount) || 0;
+  const meta = ASSET_CLASSES[suggestedClass] || ASSET_CLASSES.other;
+  const symBadge = symbol ? `${meta.emoji} ${symbol}` : `${meta.emoji} ${meta.label}`;
+  const detailLines = [
+    { type: 'text', text: 'จำนวนเงิน', size: 'xxs', color: '#475569' },
+    { type: 'text', text: `฿${fmtThb(amt)}`, size: 'xxl', weight: 'bold', color: '#0F172A' },
+    { type: 'text', text: 'บอท อ่านได้ว่า', size: 'xxs', color: '#475569', margin: 'md' },
+    { type: 'text', text: symBadge, size: 'lg', weight: 'bold', color: meta.color, wrap: true },
+    { type: 'text', text: `กลุ่ม: ${meta.label}`, size: 'xs', color: '#475569' },
+  ];
+  if (description) {
+    detailLines.push({ type: 'text', text: `· ${description}`, size: 'xxs', color: '#94A3B8', wrap: true });
+  }
+
+  return {
+    type: 'flex',
+    altText: `ยืนยัน DCA ฿${fmtThb(amt)} เข้า ${meta.label}`,
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: heroBand('🔎 อ่านสลิปได้แล้ว', `เดือน ${ym} · ยืนยันก่อนบันทึก`),
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'box',
+            layout: 'vertical',
+            backgroundColor: meta.color + '14',
+            cornerRadius: '10px',
+            paddingAll: '14px',
+            spacing: 'xs',
+            contents: detailLines,
+          },
+          {
+            type: 'text',
+            text: 'ถ้าถูกต้อง แตะปุ่มสีน้ำเงินด้านล่างเพื่อบันทึกเข้ากลุ่มนี้เลย',
+            size: 'xxs',
+            color: '#475569',
+            wrap: true,
+            margin: 'md',
+          },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: meta.color,
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: `✓ บันทึกเข้า ${meta.label}`,
+              data: `action=dca-log-allocation&kind=single&class=${suggestedClass}`,
+              displayText: `บันทึก DCA ฿${fmtThb(amt)} เข้า ${meta.label}`,
+            },
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: 'เลือกกลุ่มอื่น / แบ่งตามแผน',
+              data: 'action=dca-log-pick-class',
+              displayText: 'เลือกกลุ่มอื่น',
+            },
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: 'ยกเลิก',
+              data: 'action=dca-log-cancel',
+              displayText: 'ยกเลิกการบันทึก',
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
 function singleClassButton(cls, amount) {
   const meta = ASSET_CLASSES[cls] || ASSET_CLASSES.other;
   return {

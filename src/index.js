@@ -129,6 +129,7 @@ import {
   amountAskCard,
   dcaLogInfoCard,
   dcaLogResultCard,
+  dcaSlipConfirmCard,
   dcaWarningCard,
 } from './flex/dcaLog.js';
 import {
@@ -649,6 +650,27 @@ async function handlePostback(ev, env, userId) {
       tone: 'info',
       title: 'ยกเลิกการบันทึก DCA',
       subtitle: 'พิมพ์ "เป้าหมาย" เพื่อกลับไปที่การ์ดเป้าหมาย',
+    }));
+  }
+  // From the slip-confirmation card — user wants to pick a class manually
+  // rather than accept the one the slip suggested.
+  if (action === 'dca-log-pick-class') {
+    const state = await getDcaLogWizardState(env, userId);
+    if (!state || !state.data?.amount) {
+      return reply(env, ev.replyToken, dcaLogInfoCard({
+        tone: 'warning',
+        title: 'หมดเวลายืนยัน',
+        subtitle: 'แตะ "บันทึก DCA เดือนนี้" ใหม่อีกครั้ง',
+      }));
+    }
+    delete state.data.suggestedClass;
+    delete state.data.suggestedSymbol;
+    delete state.data.slipDescription;
+    await saveDcaLogWizardState(env, userId, state);
+    return reply(env, ev.replyToken, allocationAskCard({
+      amount: state.data.amount,
+      ym: state.data.ym,
+      allocation: state.data.allocation,
     }));
   }
 
@@ -2832,6 +2854,22 @@ async function proceedAfterDcaAmount(env, userId, state, amount, send) {
   state.data.amount = amt;
   delete state.data.warnings;
   await saveDcaLogWizardState(env, userId, state);
+
+  // Fast-path: when Claude vision identified a clear asset class from the
+  // slip (e.g. "ซื้อ KFUSA" → thai_fund, "Bought SPY" → global_etf), skip
+  // the generic allocation chooser and offer a one-tap confirmation
+  // bound to that class. Falls back to the standard chooser when no
+  // class was inferred.
+  const suggested = state.data?.suggestedClass;
+  if (suggested && isValidClass(suggested)) {
+    return send(dcaSlipConfirmCard({
+      amount: amt,
+      ym: state.data.ym,
+      suggestedClass: suggested,
+      symbol: state.data.suggestedSymbol || null,
+      description: state.data.slipDescription || null,
+    }));
+  }
   return send(allocationAskCard({
     amount: amt,
     ym: state.data.ym,
@@ -2877,6 +2915,17 @@ async function confirmDcaWarning(ev, env, userId) {
     goal_id: state.data.goalId,
     amount_thb: Math.round(Number(state.data.amount)),
   });
+  // Honor the slip-detected class on the post-warning path too.
+  const suggested = state.data?.suggestedClass;
+  if (suggested && isValidClass(suggested)) {
+    return reply(env, ev.replyToken, dcaSlipConfirmCard({
+      amount: state.data.amount,
+      ym: state.data.ym,
+      suggestedClass: suggested,
+      symbol: state.data.suggestedSymbol || null,
+      description: state.data.slipDescription || null,
+    }));
+  }
   return reply(env, ev.replyToken, allocationAskCard({
     amount: state.data.amount,
     ym: state.data.ym,
@@ -2918,13 +2967,27 @@ async function finalizeDcaLog(ev, env, userId, { kind, singleClass }) {
     }
   }
 
-  // Persist each slice as its own row
+  // Persist each slice as its own row. When the slip auto-classified into
+  // this exact class we also stamp the symbol into the note so the user
+  // can audit "what did the bot read this from".
+  const slipSymbol = state.data?.suggestedSymbol || null;
+  const slipClass = state.data?.suggestedClass || null;
   for (const b of breakdown) {
+    let notes;
+    if (kind === 'auto') {
+      notes = 'wizard:auto-split';
+    } else if (slipClass && slipClass === b.class) {
+      notes = slipSymbol
+        ? `wizard:slip:${b.class}:${slipSymbol}`
+        : `wizard:slip:${b.class}`;
+    } else {
+      notes = `wizard:single:${b.class}`;
+    }
     await recordContribution(env, userId, {
       goalId,
       assetClass: b.class,
       amountThb: b.amount_thb,
-      notes: kind === 'auto' ? 'wizard:auto-split' : `wizard:single:${b.class}`,
+      notes,
     });
   }
 
@@ -2934,6 +2997,8 @@ async function finalizeDcaLog(ev, env, userId, { kind, singleClass }) {
     goal_id: goalId, amount_thb: amount,
     asset_class: kind === 'single' ? singleClass : 'auto-split',
     via: 'wizard',
+    from_slip: !!slipClass,
+    slip_symbol: slipSymbol,
     breakdown: breakdown.map((b) => ({ class: b.class, amount_thb: Math.round(b.amount_thb) })),
   });
   return reply(env, ev.replyToken, dcaLogResultCard({
@@ -3003,9 +3068,25 @@ async function handleDcaLogImage(ev, env, userId, messageId, state) {
       subtitle: 'ลองส่งภาพที่คมชัดขึ้น หรือพิมพ์ตัวเลขเอง',
     }));
   }
+  // Stash the asset-class / symbol Claude inferred so proceedAfterDcaAmount
+  // can fast-path to the slip-confirmation card instead of asking the user
+  // to pick an allocation. Only trust classes the system knows about.
+  const suggestedClass = isValidClass(extracted?.asset_class) ? extracted.asset_class : null;
+  if (suggestedClass) {
+    state.data.suggestedClass = suggestedClass;
+    state.data.suggestedSymbol = extracted.symbol ? String(extracted.symbol).slice(0, 24) : null;
+    state.data.slipDescription = extracted.description ? String(extracted.description).slice(0, 80) : null;
+    await saveDcaLogWizardState(env, userId, state);
+  } else {
+    delete state.data.suggestedClass;
+    delete state.data.suggestedSymbol;
+    delete state.data.slipDescription;
+  }
   await logEvent(env, userId, 'dca_log_image_parsed', {
     amount_thb: amt,
     description: extracted.description || null,
+    asset_class: suggestedClass,
+    symbol: extracted?.symbol || null,
   });
   // Advance with the parsed amount through the shared continuation so the
   // same large-amount / duplicate-month warnings apply to slip uploads.

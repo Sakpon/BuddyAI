@@ -175,17 +175,33 @@ export async function extractPortfolio(env, bytes, mimeType) {
 // to infer the asset class from a single slip (way too noisy across the
 // many Thai bank/broker UIs).
 //
-// Shape: { amount_thb: number|null, currency, description, warnings[] }
+// Shape: { amount_thb, amount_native, currency, description,
+//          asset_class: 'thai_equity'|'global_etf'|'hk_equity'|'thai_fund'|
+//                       'cash'|'crypto'|'other'|null,
+//          symbol: string|null,
+//          warnings[] }
 const DCA_RECEIPT_PROMPT = `คุณคือผู้ช่วยอ่านภาพ slip การโอนเงินหรือใบยืนยันซื้อกองทุน/หุ้นจากแอปธนาคารหรือโบรกเกอร์ไทย
 
-จุดประสงค์: หาจำนวนเงินรวมของรายการนี้ (เป็นเงินบาท หรือสกุลเงินอื่น)
+จุดประสงค์: หาจำนวนเงินของรายการนี้ + ถ้าเป็นการซื้อหุ้น/กองทุน ให้ระบุ สัญลักษณ์ และ ประเภทสินทรัพย์ ด้วย
+
+กฎการจัดประเภท asset_class — เลือกเพียง 1 ค่า หรือ null ถ้าไม่ใช่การซื้อสินทรัพย์ที่ชัดเจน:
+- "thai_equity"  → หุ้นจดทะเบียนใน SET/MAI ของไทย (เช่น PTT, AOT, BBL, KBANK, CPALL, ADVANC)
+- "global_etf"   → ETF หรือหุ้นต่างประเทศ ส่วนใหญ่เป็น US ETF (SPY, VOO, QQQ, VTI, VT, IVV, VOOG, SCHD)
+- "hk_equity"    → หุ้น Hong Kong (เลขหุ้น 4-5 หลัก เช่น 0700 Tencent, 9988 Alibaba)
+- "thai_fund"    → กองทุนรวมไทย (ชื่อขึ้นต้น KF, B-, SCB, K, TMB, MFC, ASP, ONEAM, PRINCIPAL ฯลฯ — เช่น KFUSA, B-INNOTECH, SCBGOLD)
+- "cash"         → ฝากเข้า/ออมเงินสด ไม่มีการซื้อหุ้น/กองทุน
+- "crypto"       → ซื้อ Bitcoin / Ethereum / เหรียญคริปโต
+- "other"        → ไม่เข้าหมวดข้างต้น
+- null           → ภาพไม่ชัดว่าซื้ออะไร หรือเป็น slip โอนเงินอย่างเดียวที่ไม่ได้บอกปลายทางว่าเป็นหลักทรัพย์ใด (ห้ามเดา)
 
 ตอบเป็น JSON เพียงอย่างเดียว:
 {
   "amount_thb": <ตัวเลขรวมในหน่วยบาท ถ้าเป็นสกุลเงินอื่นให้ใส่ amount_native + currency ด้วย>,
   "amount_native": <ตัวเลขในสกุลต้นทาง หรือ null>,
   "currency": "THB | USD | HKD | ...",
-  "description": "<1 วลีสั้นๆ บอกว่าเป็นรายการอะไร เช่น 'โอนเข้าบัญชี SCB' / 'ซื้อกองทุน SCBGOLD'>",
+  "asset_class": "thai_equity | global_etf | hk_equity | thai_fund | cash | crypto | other | null",
+  "symbol": "<ticker หรือชื่อกองทุนถ้าเห็นชัด เช่น PTT / SPY / KFUSA / 0700 ไม่งั้น null>",
+  "description": "<1 วลีสั้นๆ บอกว่าเป็นรายการอะไร เช่น 'ซื้อกองทุน SCBGOLD' / 'โอนเข้าบัญชี SCB'>",
   "warnings": [<คำเตือนถ้าตัวเลขไม่ครบหรือไม่ชัด>]
 }
 

@@ -203,6 +203,28 @@ export async function tagSymbolClass(env, userId, symbol, assetClass) {
   return { ok: true, changed: meta?.changes || 0, symbol: sym, class: assetClass };
 }
 
+// One-shot migration: flips holdings whose symbol is a well-known US
+// individual stock AND were tagged `global_etf` over to `us_equity`. This
+// is narrower than backfillAssetClasses on purpose — it WON'T override
+// manual tags the user set via "ติด X <class>" for unrelated symbols, and
+// it leaves rows in other classes alone. Idempotent. Returns the count
+// of rows actually changed.
+export async function reclassifyKnownUsStocks(env, userId, knownSymbolsSet) {
+  const symbols = [...knownSymbolsSet];
+  if (!symbols.length) return 0;
+  const placeholders = symbols.map(() => '?').join(',');
+  const { meta } = await env.DB.prepare(
+    `UPDATE holdings
+        SET asset_class = 'us_equity'
+      WHERE asset_class = 'global_etf'
+        AND UPPER(symbol) IN (${placeholders})
+        AND portfolio_id IN (SELECT id FROM portfolios WHERE user_id = ?)`,
+  )
+    .bind(...symbols, userId)
+    .run();
+  return meta?.changes || 0;
+}
+
 // Backfill: for any holding still on the legacy default ('thai_equity'),
 // re-infer from the symbol if our heuristic disagrees. Called once after
 // migration. Idempotent.

@@ -100,8 +100,8 @@ import { extractDcaReceipt, extractFromImage, fetchLineImage } from './vision.js
 import { fetchYahooNewsForHoldings } from './news.js';
 import { fetchUnifiedQuotesForHoldings } from './marketdata.js';
 import { fetchAndStoreFxRates } from './fx.js';
-import { backfillAssetClasses, getNetWorth, tagSymbolClass } from './wealth.js';
-import { inferAssetClass, isValidClass, ASSET_CLASSES } from './assetclass.js';
+import { backfillAssetClasses, getNetWorth, reclassifyKnownUsStocks, tagSymbolClass } from './wealth.js';
+import { KNOWN_US_STOCKS, inferAssetClass, isValidClass, ASSET_CLASSES } from './assetclass.js';
 import { netWorthCard } from './flex/wealth.js';
 import {
   DEFAULT_ALLOCATION,
@@ -161,7 +161,7 @@ const HELP_TH = [
   '• ส่งภาพพอร์ตจากแอปโบรกเกอร์ — ระบบจะอ่านและสรุปให้',
   '• ส่งภาพรายการซื้อขาย (เช่น SCB Easy Activity) — ระบบจะอ่านและให้กดยืนยันนำเข้า',
   '• "ความมั่งคั่ง" / "net worth" — สรุปความมั่งคั่งสุทธิรวมทุกพอร์ตเป็นเงินบาท',
-  '• "ติด <SYM> <ประเภท>" — ติดป้ายประเภทสินทรัพย์ (thai_equity, global_etf, thai_fund, cash, hk_equity, crypto)',
+  '• "ติด <SYM> <ประเภท>" — ติดป้ายประเภทสินทรัพย์ (thai_equity, us_equity, global_etf, thai_fund, cash, hk_equity, crypto)',
   '• "ตั้งเป้าหมาย" — ตั้งเป้าความมั่งคั่งระยะยาวพร้อมแผน DCA',
   '• "เป้าหมาย" / "goal" — ดูเป้าหมายและความก้าวหน้า',
   '• "ปรับเป้าหมาย" — เมนูแก้ไขเป้าหมาย (ยอด/ปี/ผลตอบแทน/DCA/สัดส่วน)',
@@ -2109,6 +2109,21 @@ async function confirmGoalFromWizard(ev, env, userId) {
   }));
 }
 
+// Per-user KV flag so the us_equity reclassify runs at most once per user.
+// The reclassify itself is idempotent + narrow (only flips global_etf rows
+// whose symbol is a well-known US individual stock), so re-running would
+// be a no-op — the flag just avoids the extra SQL roundtrip on every view.
+async function ensureUsEquityReclassified(env, userId) {
+  const key = `class-backfill-us-equity:${userId}`;
+  if (await env.SESSION_KV.get(key)) return 0;
+  const changed = await reclassifyKnownUsStocks(env, userId, KNOWN_US_STOCKS);
+  await env.SESSION_KV.put(key, '1');
+  if (changed > 0) {
+    await logEvent(env, userId, 'us_equity_reclassified', { changed });
+  }
+  return changed;
+}
+
 async function showGoal(ev, env, userId) {
   const goal = await getActiveGoal(env, userId);
   if (!goal) {
@@ -2118,6 +2133,11 @@ async function showGoal(ev, env, userId) {
       subtitle: 'พิมพ์ "ตั้งเป้าหมาย" เพื่อเริ่มต้นแผน DCA ระยะยาว',
     }));
   }
+  // One-shot migration: flip well-known US individual stocks tagged
+  // `global_etf` to the new `us_equity` class, so the proportion section
+  // shows "🇺🇸 หุ้นสหรัฐ" as its own row. Gated by a per-user KV flag so
+  // it runs at most once.
+  await ensureUsEquityReclassified(env, userId).catch(() => {});
   const netWorth = await getNetWorth(env, userId).catch(() => ({ total_thb: 0, breakdown: [] }));
   const contributionsTotalThb = await getContributionsTotal(env, userId, goal.id);
   const monthsContributed = await getContributionMonthsCount(env, userId, goal.id).catch(() => 0);

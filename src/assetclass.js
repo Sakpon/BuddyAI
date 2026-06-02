@@ -8,6 +8,7 @@
 
 export const ASSET_CLASSES = {
   thai_equity: { label: 'หุ้นไทย',      emoji: '🇹🇭', color: '#0EA5E9', currency: 'THB' },
+  us_equity:   { label: 'หุ้นสหรัฐ',     emoji: '🇺🇸', color: '#2563EB', currency: 'USD' },
   global_etf:  { label: 'ETF/หุ้นต่างประเทศ', emoji: '🌎', color: '#16A34A', currency: 'USD' },
   hk_equity:   { label: 'หุ้นฮ่องกง',    emoji: '🇭🇰', color: '#DC2626', currency: 'HKD' },
   thai_fund:   { label: 'กองทุนรวม',     emoji: '🪙', color: '#D97706', currency: 'THB' },
@@ -50,20 +51,43 @@ export function inferAssetClass(symbol) {
     return 'thai_fund';
   }
 
-  // Global ETF / US stock — 1-5 letter all-caps tickers (VOO, VWRA, AAPL,
-  // MSFT, SPY, QQQ). Conservative because Thai SET symbols are also short
-  // letters (PTT, AOT). Fall through to thai_equity by default; only flag
-  // as global if it matches a well-known global ticker.
-  const KNOWN_GLOBAL = new Set([
-    'VOO', 'VTI', 'VWRA', 'VWRD', 'VEA', 'VEU', 'SPY', 'QQQ', 'IVV', 'AGG',
-    'BND', 'EWY', 'EWJ', 'INDA', 'EEM', 'IEMG', 'GLD', 'IAU', 'TLT', 'HYG',
-    'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'TSLA', 'NVDA', 'BRK.B',
-  ]);
-  if (KNOWN_GLOBAL.has(s)) return 'global_etf';
+  // US individual stocks — split from global_etf so the goal card's
+  // proportion section shows "หุ้นสหรัฐ" as its own row instead of
+  // bucketing it under "ETF/หุ้นต่างประเทศ". Conservative: only well-known
+  // tickers, since 1-5 letter all-caps overlaps with Thai SET symbols.
+  if (KNOWN_US_STOCKS.has(s)) return 'us_equity';
+
+  // Global / US ETFs and other index/bond funds (broker confirmations of
+  // ETF purchases also fall here when the symbol is listed on a US exchange).
+  if (KNOWN_GLOBAL_ETF.has(s)) return 'global_etf';
 
   // Default: Thai equity (matches our user base)
   return 'thai_equity';
 }
+
+export const KNOWN_US_STOCKS = new Set([
+  // Mega-cap US individual stocks. Keep the list tight — when in doubt,
+  // fall through to thai_equity (the more common case for our Thai users).
+  'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'TSLA', 'NVDA',
+  'BRK.B', 'BRK-B', 'BRK.A', 'BRK-A',
+  'JPM', 'V', 'MA', 'JNJ', 'WMT', 'XOM', 'PG', 'HD', 'CVX', 'KO', 'PEP',
+  'NFLX', 'AMD', 'INTC', 'CRM', 'ADBE', 'ORCL', 'CSCO', 'AVGO', 'PYPL',
+  'DIS', 'NKE', 'COST', 'ABBV', 'PFE', 'MRK', 'LLY', 'UNH',
+  'BAC', 'WFC', 'GS', 'MS',
+  'BA', 'CAT', 'GE', 'F', 'GM',
+  'T', 'VZ', 'TMUS',
+  'UBER', 'LYFT', 'SHOP', 'SQ', 'COIN', 'PLTR', 'SNOW', 'NOW', 'ZM',
+]);
+
+const KNOWN_GLOBAL_ETF = new Set([
+  // Broad-market / theme ETFs (mostly US-listed) and a few bond/EM proxies.
+  'VOO', 'VTI', 'VT', 'VWRA', 'VWRD', 'VEA', 'VEU', 'VYM',
+  'SPY', 'QQQ', 'IVV', 'SCHD', 'DIA', 'IWM',
+  'AGG', 'BND', 'TLT', 'HYG', 'LQD', 'BNDW',
+  'EWY', 'EWJ', 'INDA', 'EEM', 'IEMG', 'VWO', 'EFA', 'IEFA',
+  'GLD', 'IAU', 'SLV',
+  'ARKK', 'XLF', 'XLK', 'XLE', 'XLV', 'XLY', 'XLI',
+]);
 
 // Currency the holding is denominated in — usually a property of its class,
 // not the symbol itself. Caller can override via the explicit `currency`

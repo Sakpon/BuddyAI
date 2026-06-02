@@ -69,6 +69,7 @@ import { dailyNewsCard } from './flex/news.js';
 import { oilLiffCard, stockLiffCard } from './flex/liffCards.js';
 import {
   actionAckCard,
+  confirmActionCard,
   holdingsStatusCard,
   portfolioAnalysisCard,
   portfolioCompareCard,
@@ -494,7 +495,99 @@ async function handlePostback(ev, env, userId) {
     }));
   }
 
-  if (action === 'delete-portfolio') {
+  // No-op postback — used by the "ยกเลิก" button on confirmation cards.
+  // Acknowledged silently so LINE doesn't surface a "no response" banner.
+  if (action === 'noop') {
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: 'ยกเลิกแล้ว',
+    }));
+  }
+
+  // Step 1 of per-portfolio update — show confirmation before doing anything.
+  if (action === 'confirm-update-portfolio') {
+    const id = Number(data.get('id'));
+    if (!Number.isFinite(id)) return reply(env, ev.replyToken, textMsg('คำสั่งไม่ถูกต้อง'));
+    const found = await getPortfolioWithHoldings(env, userId, id).catch(() => null);
+    if (!found?.portfolio) {
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: 'ไม่พบพอร์ตนั้น',
+        subtitle: 'อาจถูกลบไปแล้ว',
+      }));
+    }
+    const name = found.portfolio.name || 'พอร์ต';
+    const isActive = found.portfolio.is_active === 1;
+    return reply(env, ev.replyToken, confirmActionCard({
+      tone: 'info',
+      title: `อัพเดต "${name}"?`,
+      subtitle: isActive
+        ? 'ระบบจะรอภาพพอร์ตล่าสุดของคุณเพื่อบันทึก snapshot ใหม่'
+        : 'ระบบจะเลือกพอร์ตนี้เป็นพอร์ตที่ใช้งานก่อน แล้วรอภาพพอร์ตล่าสุด',
+      confirm: {
+        label: '✓ ยืนยัน รออัพเดต',
+        data: `action=update-portfolio-confirmed&id=${id}`,
+        displayText: `เตรียมอัพเดต ${name}`,
+      },
+    }));
+  }
+
+  // Step 2 — user confirmed. Make this the active portfolio (if not already)
+  // and prompt them to send the latest screenshot. The actual update runs
+  // through the existing pending → portfolioConfirmCard → update-portfolio
+  // flow once they upload.
+  if (action === 'update-portfolio-confirmed') {
+    const id = Number(data.get('id'));
+    if (!Number.isFinite(id)) return reply(env, ev.replyToken, textMsg('คำสั่งไม่ถูกต้อง'));
+    const ok = await setActivePortfolio(env, userId, id);
+    if (!ok) {
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: 'ไม่พบพอร์ตนั้น',
+        subtitle: 'อาจถูกลบไปแล้ว',
+      }));
+    }
+    const active = await getActivePortfolio(env, userId);
+    const name = active?.portfolio?.name || 'พอร์ต';
+    await logEvent(env, userId, 'portfolio_update_requested', { portfolio_id: id });
+    return reply(env, ev.replyToken, actionAckCard({
+      tone: 'info',
+      title: `พร้อมอัพเดต "${name}"`,
+      subtitle: 'ส่งภาพพอร์ตล่าสุดจากแอปโบรกเกอร์ — ระบบจะให้คุณยืนยันก่อนเขียนทับ',
+    }));
+  }
+
+  // Step 1 of delete — show confirmation. Used by BOTH the history bubble
+  // and the portfolio-list card so destructive deletes always pause first.
+  if (action === 'confirm-delete-portfolio') {
+    const id = Number(data.get('id'));
+    if (!Number.isFinite(id)) return reply(env, ev.replyToken, textMsg('คำสั่งไม่ถูกต้อง'));
+    const found = await getPortfolioWithHoldings(env, userId, id).catch(() => null);
+    if (!found?.portfolio) {
+      return reply(env, ev.replyToken, actionAckCard({
+        tone: 'warning',
+        title: 'ไม่พบพอร์ตนั้น',
+        subtitle: 'อาจถูกลบไปแล้ว',
+      }));
+    }
+    const name = found.portfolio.name || 'พอร์ต';
+    const snapCount = await getPortfolioSnapshots(env, userId, id, 100)
+      .then((s) => s.length)
+      .catch(() => 0);
+    return reply(env, ev.replyToken, confirmActionCard({
+      tone: 'danger',
+      title: `ลบ "${name}"?`,
+      subtitle: `จะลบพอร์ตและประวัติ snapshot ${snapCount} รายการ — ย้อนกลับไม่ได้`,
+      confirm: {
+        label: '🗑 ลบจริง',
+        data: `action=delete-portfolio-confirmed&id=${id}`,
+        displayText: `ลบ ${name}`,
+      },
+    }));
+  }
+
+  // Step 2 — user confirmed. Actually delete.
+  if (action === 'delete-portfolio-confirmed') {
     const id = Number(data.get('id'));
     if (!Number.isFinite(id)) return reply(env, ev.replyToken, textMsg('คำสั่งไม่ถูกต้อง'));
     const ok = await deletePortfolioById(env, userId, id);

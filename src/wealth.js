@@ -203,6 +203,35 @@ export async function tagSymbolClass(env, userId, symbol, assetClass) {
   return { ok: true, changed: meta?.changes || 0, symbol: sym, class: assetClass };
 }
 
+// Re-runs inferAssetClass on every holding currently sitting on the
+// schema default ('thai_equity') and updates the row when the inference
+// produces a different class. Catches the case where holdings were
+// inserted before the INSERT path learned to call inferAssetClass —
+// rows landed on the default and never got reclassified. We touch ONLY
+// thai_equity rows so manual tags via "ติด X <class>" stay intact.
+// Idempotent. Returns the number of rows changed.
+export async function reclassifyLegacyDefaults(env, userId, inferFn) {
+  const { results } = await env.DB.prepare(
+    `SELECT h.id, h.symbol
+       FROM holdings h
+       JOIN portfolios p ON p.id = h.portfolio_id
+      WHERE p.user_id = ? AND h.asset_class = 'thai_equity'`,
+  )
+    .bind(userId)
+    .all();
+  let changed = 0;
+  for (const r of (results || [])) {
+    const inferred = inferFn(r.symbol);
+    if (inferred && inferred !== 'thai_equity') {
+      await env.DB.prepare(`UPDATE holdings SET asset_class = ? WHERE id = ?`)
+        .bind(inferred, r.id)
+        .run();
+      changed++;
+    }
+  }
+  return changed;
+}
+
 // One-shot migration: flips holdings whose symbol is a well-known US
 // individual stock AND were tagged `global_etf` over to `us_equity`. This
 // is narrower than backfillAssetClasses on purpose — it WON'T override

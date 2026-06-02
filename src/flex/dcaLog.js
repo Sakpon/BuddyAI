@@ -226,6 +226,80 @@ export function allocationAskCard({ amount, ym, allocation }) {
   };
 }
 
+// Lightweight "want to log this as DCA this month?" follow-up shown after
+// a portfolio save/update or a transactions import. The confirmData is
+// supplied by the caller — either action=goal-log-monthly (post-portfolio)
+// or action=dca-from-buys&amount=...&class=... (post-transactions).
+export function dcaOfferCard({ title, subtitle, confirmLabel, confirmData }) {
+  return {
+    type: 'flex',
+    altText: title,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'box',
+            layout: 'vertical',
+            backgroundColor: '#0EA5E914',
+            cornerRadius: '10px',
+            paddingAll: '12px',
+            spacing: 'xs',
+            contents: [
+              {
+                type: 'box',
+                layout: 'horizontal',
+                spacing: 'sm',
+                contents: [
+                  { type: 'text', text: '💸', size: 'lg', flex: 0 },
+                  { type: 'text', text: title, weight: 'bold', size: 'md', color: '#0369A1', wrap: true, flex: 5 },
+                ],
+              },
+              ...(subtitle
+                ? [{ type: 'text', text: subtitle, size: 'xxs', color: '#475569', wrap: true, margin: 'sm' }]
+                : []),
+            ],
+          },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#0EA5E9',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: confirmLabel,
+              data: confirmData,
+              displayText: confirmLabel,
+            },
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: 'ข้าม',
+              data: 'action=noop',
+              displayText: 'ข้าม',
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
 // Slip-confirmation card — shown when Claude vision identifies BOTH the
 // amount AND the asset class from the uploaded slip / buy confirmation.
 // One-tap "บันทึก" goes straight to the same single-class allocation

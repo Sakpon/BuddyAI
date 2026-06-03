@@ -679,6 +679,34 @@ async function handlePostback(ev, env, userId) {
       symbol: data.get('symbol') || null,
     });
   }
+  // From the slip-confirmation card — user wants to re-enter the amount.
+  // Resets the wizard back to the amount step and shows the amount-ask
+  // card; the existing text/image interceptors will pick up the next
+  // input and re-run proceedAfterDcaAmount, so the slip-confirm card
+  // will return with the corrected number (or new class via re-upload).
+  if (action === 'dca-log-edit-amount') {
+    const state = await getDcaLogWizardState(env, userId);
+    if (!state) {
+      return reply(env, ev.replyToken, dcaLogInfoCard({
+        tone: 'warning',
+        title: 'หมดเวลายืนยัน',
+        subtitle: 'แตะ "บันทึก DCA เดือนนี้" ใหม่อีกครั้ง',
+      }));
+    }
+    state.step = 'amount';
+    delete state.data.amount;
+    delete state.data.warnings;
+    delete state.data.suggestedClass;
+    delete state.data.suggestedSymbol;
+    delete state.data.slipDescription;
+    await saveDcaLogWizardState(env, userId, state);
+    return reply(env, ev.replyToken, amountAskCard({
+      plannedAmountThb: state.data.plannedAmount,
+      isOverride: !!state.data.isOverride,
+      ym: state.data.ym,
+    }));
+  }
+
   // From the slip-confirmation card — user wants to pick a class manually
   // rather than accept the one the slip suggested.
   if (action === 'dca-log-pick-class') {
@@ -809,12 +837,14 @@ async function handleImage(ev, env, userId, messageId) {
   await showLoading(env, userId, 30);
   await upsertUser(env, { userId });
 
-  // DCA-log wizard interception — if the user is mid-wizard on the amount
-  // step (or the warn step, where they may re-upload a corrected slip), treat
-  // the image as a slip / fund-purchase receipt instead of falling through to
-  // the portfolio/transactions vision pipeline.
+  // DCA-log wizard interception — treat the image as a slip / receipt
+  // whenever a DCA wizard is active. Covers the amount step, the warn
+  // step (user re-uploading after a large-amount/duplicate warning),
+  // AND the allocation step (user uploading a corrected slip while
+  // looking at the slip-confirm card). The handler resets amount data
+  // on each parse so re-uploads just work.
   const dcaLogState = await getDcaLogWizardState(env, userId);
-  if (dcaLogState && (dcaLogState.step === 'amount' || dcaLogState.step === 'warn')) {
+  if (dcaLogState) {
     return handleDcaLogImage(ev, env, userId, messageId, dcaLogState);
   }
 
@@ -929,11 +959,13 @@ async function handleText(ev, env, userId, text) {
     // fall through to the matched command
   }
 
-  // DCA-log wizard interception. On the amount step (and the warn step, where
-  // the user may re-type a corrected number) free-form text is the answer.
-  // The allocation step is postback-driven, so text there falls through.
+  // DCA-log wizard interception. Free-form text is treated as a (re-)entered
+  // amount on amount / warn / allocation steps — the last covers the case
+  // where the user is looking at the slip-confirm card and just types a
+  // corrected number instead of pressing "✏️ แก้ยอด" first. handleDca-
+  // LogAmountText resets the wizard step from inside.
   const dcaLogState = await getDcaLogWizardState(env, userId);
-  if (dcaLogState && (dcaLogState.step === 'amount' || dcaLogState.step === 'warn') && !cmd) {
+  if (dcaLogState && !cmd) {
     return handleDcaLogAmountText(ev, env, userId, text, dcaLogState);
   }
   if (dcaLogState && cmd) {

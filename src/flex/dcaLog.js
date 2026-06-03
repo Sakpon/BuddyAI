@@ -373,16 +373,38 @@ export function dcaSlipConfirmCard({ amount, ym, suggestedClass, symbol, descrip
               displayText: `บันทึก DCA ฿${fmtThb(amt)} เข้า ${meta.label}`,
             },
           },
+          // Two edit affordances side by side — change just the amount,
+          // or change just the asset class. Cancel sits below.
           {
-            type: 'button',
-            style: 'secondary',
-            height: 'sm',
-            action: {
-              type: 'postback',
-              label: 'เลือกกลุ่มอื่น / แบ่งตามแผน',
-              data: 'action=dca-log-pick-class',
-              displayText: 'เลือกกลุ่มอื่น',
-            },
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              {
+                type: 'button',
+                style: 'secondary',
+                height: 'sm',
+                flex: 1,
+                action: {
+                  type: 'postback',
+                  label: '✏️ แก้ยอด',
+                  data: 'action=dca-log-edit-amount',
+                  displayText: 'แก้ไขยอด',
+                },
+              },
+              {
+                type: 'button',
+                style: 'secondary',
+                height: 'sm',
+                flex: 1,
+                action: {
+                  type: 'postback',
+                  label: '🔁 เปลี่ยนกลุ่ม',
+                  data: 'action=dca-log-pick-class',
+                  displayText: 'เปลี่ยนกลุ่ม',
+                },
+              },
+            ],
           },
           {
             type: 'button',
@@ -394,6 +416,14 @@ export function dcaSlipConfirmCard({ amount, ym, suggestedClass, symbol, descrip
               data: 'action=dca-log-cancel',
               displayText: 'ยกเลิกการบันทึก',
             },
+          },
+          {
+            type: 'text',
+            text: 'แก้ยอด: พิมพ์ตัวเลขใหม่ / ส่งภาพใหม่ · เปลี่ยนกลุ่ม: เลือกจาก list',
+            size: 'xxs',
+            color: '#94A3B8',
+            wrap: true,
+            align: 'center',
           },
         ],
       },

@@ -203,26 +203,26 @@ export async function tagSymbolClass(env, userId, symbol, assetClass) {
   return { ok: true, changed: meta?.changes || 0, symbol: sym, class: assetClass };
 }
 
-// One-shot migration: flips holdings whose symbol is a well-known US
-// individual stock AND were tagged `global_etf` over to `us_equity`. This
-// is narrower than backfillAssetClasses on purpose — it WON'T override
-// manual tags the user set via "ติด X <class>" for unrelated symbols, and
-// it leaves rows in other classes alone. Idempotent. Returns the count
-// of rows actually changed.
-export async function reclassifyKnownUsStocks(env, userId, knownSymbolsSet) {
-  const symbols = [...knownSymbolsSet];
-  if (!symbols.length) return 0;
-  const placeholders = symbols.map(() => '?').join(',');
-  const { meta } = await env.DB.prepare(
-    `UPDATE holdings
-        SET asset_class = 'us_equity'
-      WHERE asset_class = 'global_etf'
-        AND UPPER(symbol) IN (${placeholders})
-        AND portfolio_id IN (SELECT id FROM portfolios WHERE user_id = ?)`,
-  )
-    .bind(...symbols, userId)
-    .run();
-  return meta?.changes || 0;
+// Re-runs inferAssetClass on rows still on the schema default
+// ('thai_equity') — catches holdings inserted before vision started
+// tagging them. Touches no other classes, so manual tags via
+// "ติด X <class>" survive. Idempotent.
+export async function reclassifyHoldings(env, userId, inferFn) {
+  const { results } = await env.DB.prepare(
+    `SELECT h.id, h.symbol FROM holdings h
+       JOIN portfolios p ON p.id = h.portfolio_id
+      WHERE p.user_id = ? AND h.asset_class = 'thai_equity'`,
+  ).bind(userId).all();
+  let changed = 0;
+  for (const r of (results || [])) {
+    const next = inferFn(r.symbol);
+    if (next && next !== 'thai_equity') {
+      await env.DB.prepare(`UPDATE holdings SET asset_class = ? WHERE id = ?`)
+        .bind(next, r.id).run();
+      changed++;
+    }
+  }
+  return changed;
 }
 
 // Backfill: for any holding still on the legacy default ('thai_equity'),

@@ -1,3 +1,10 @@
+import { inferAssetClass, isValidClass } from './assetclass.js';
+
+// Vision tags asset_class per holding now; only fall back to the symbol
+// heuristic when vision didn't supply a valid class.
+const pickClass = (extracted, sym) =>
+  isValidClass(extracted) ? extracted : inferAssetClass(sym);
+
 export async function upsertUser(env, profile) {
   const { userId, displayName = null, pictureUrl = null, language = 'th' } = profile;
   await env.DB.prepare(
@@ -164,8 +171,8 @@ async function insertPortfolio(env, userId, p, name) {
     await env.DB.prepare(
       `INSERT INTO holdings
         (portfolio_id, symbol, quantity, avg_cost, market_price,
-         market_value, unrealized_pl, weight_pct)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         market_value, unrealized_pl, weight_pct, asset_class)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         portfolioId,
@@ -176,6 +183,7 @@ async function insertPortfolio(env, userId, p, name) {
         numOrNull(h.market_value),
         numOrNull(h.unrealized_pl),
         numOrNull(h.weight_pct),
+        pickClass(h.asset_class, String(h.symbol).toUpperCase()),
       )
       .run();
   }
@@ -379,8 +387,8 @@ export async function updatePortfolioFromPending(env, userId, portfolioId) {
     await env.DB.prepare(
       `INSERT INTO holdings
         (portfolio_id, symbol, quantity, avg_cost, market_price,
-         market_value, unrealized_pl, weight_pct)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         market_value, unrealized_pl, weight_pct, asset_class)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(
         portfolioId,
@@ -391,6 +399,7 @@ export async function updatePortfolioFromPending(env, userId, portfolioId) {
         numOrNull(h.market_value),
         numOrNull(h.unrealized_pl),
         numOrNull(h.weight_pct),
+        pickClass(h.asset_class, String(h.symbol).toUpperCase()),
       )
       .run();
   }

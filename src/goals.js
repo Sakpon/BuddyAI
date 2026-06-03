@@ -14,10 +14,13 @@ const MAX_TARGET_AMOUNT = 1_000_000_000; // ฿1B ceiling — beyond this, get a
 // real returns, rounded to a number that's defensible and easy to remember.
 export const DEFAULT_EXPECTED_RETURN_PCT = 6.5;
 
-// Default 60/30/10 allocation from the deck.
+// Default 50/15/25/10 — home-biased but carves out US explicitly so
+// the goal card's "สัดส่วน" row surfaces a "หุ้นสหรัฐ" bucket out of the
+// box. Users can override via the allocation step (3 or 4 numbers).
 export const DEFAULT_ALLOCATION = {
-  thai_equity: 0.6,
-  global_etf:  0.3,
+  thai_equity: 0.5,
+  us_equity:   0.15,
+  global_etf:  0.25,
   cash:        0.1,
 };
 
@@ -344,21 +347,31 @@ function parseMonthName(tok) {
 }
 
 // Parse the allocation answer:
-//   "default"     → DEFAULT_ALLOCATION
-//   "70 20 10"    → 0.7 / 0.2 / 0.1 (thai_equity / global_etf / cash)
-//   "60 30 10"    → 0.6 / 0.3 / 0.1
-//   "60,30,10"    → same
+//   "default"        → DEFAULT_ALLOCATION
+//   "50 15 25 10"    → thai / us / global / cash (preferred 4-number form)
+//   "70 20 10"       → thai / global / cash (legacy 3-number, us_equity = 0)
+//   commas also work
 export function parseAllocation(raw) {
   const s = String(raw || '').trim().toLowerCase();
   if (!s || s === 'default' || s === 'ค่าเริ่มต้น') return { ...DEFAULT_ALLOCATION };
   const parts = s.split(/[\s,]+/).map((p) => Number(p)).filter((n) => Number.isFinite(n));
-  if (parts.length !== 3) return null;
+  if (parts.length !== 3 && parts.length !== 4) return null;
   const sum = parts.reduce((a, b) => a + b, 0);
   if (sum <= 0) return null;
   // Accept both 0-1 and 0-100 input ranges.
   const norm = sum > 1.5 ? parts.map((p) => p / 100) : parts;
+  if (parts.length === 4) {
+    return {
+      thai_equity: Number(norm[0]) || 0,
+      us_equity:   Number(norm[1]) || 0,
+      global_etf:  Number(norm[2]) || 0,
+      cash:        Number(norm[3]) || 0,
+    };
+  }
+  // Legacy 3-number form — no us_equity carved out.
   return {
     thai_equity: Number(norm[0]) || 0,
+    us_equity:   0,
     global_etf:  Number(norm[1]) || 0,
     cash:        Number(norm[2]) || 0,
   };

@@ -66,8 +66,10 @@ export function inferAssetClass(symbol) {
 }
 
 export const KNOWN_US_STOCKS = new Set([
-  // Mega-cap US individual stocks. Keep the list tight — when in doubt,
-  // fall through to thai_equity (the more common case for our Thai users).
+  // Mega-cap US individual stocks + popular ADRs that show up in Thai
+  // retail US-broker portfolios (Dime, Webull, IBKR, Schwab). Vision is
+  // the primary classifier now; this list is the heuristic fallback when
+  // vision misses or for legacy rows.
   'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'META', 'TSLA', 'NVDA',
   'BRK.B', 'BRK-B', 'BRK.A', 'BRK-A',
   'JPM', 'V', 'MA', 'JNJ', 'WMT', 'XOM', 'PG', 'HD', 'CVX', 'KO', 'PEP',
@@ -77,16 +79,28 @@ export const KNOWN_US_STOCKS = new Set([
   'BA', 'CAT', 'GE', 'F', 'GM',
   'T', 'VZ', 'TMUS',
   'UBER', 'LYFT', 'SHOP', 'SQ', 'COIN', 'PLTR', 'SNOW', 'NOW', 'ZM',
+  // ADRs / non-US-domiciled but US-listed
+  'TSM', 'BABA', 'NIO', 'JD', 'PDD', 'BIDU', 'MELI', 'SE', 'TME', 'GRAB',
+  'ARM', 'SMCI', 'ABNB', 'RIVN', 'LCID', 'RBLX',
 ]);
 
 const KNOWN_GLOBAL_ETF = new Set([
-  // Broad-market / theme ETFs (mostly US-listed) and a few bond/EM proxies.
+  // Broad-market / index / bond ETFs.
   'VOO', 'VTI', 'VT', 'VWRA', 'VWRD', 'VEA', 'VEU', 'VYM',
   'SPY', 'QQQ', 'IVV', 'SCHD', 'DIA', 'IWM',
+  'SCHX', 'SCHA', 'SCHG', 'SCHB', 'IJR', 'IJH', 'SPLG',
   'AGG', 'BND', 'TLT', 'HYG', 'LQD', 'BNDW',
   'EWY', 'EWJ', 'INDA', 'EEM', 'IEMG', 'VWO', 'EFA', 'IEFA',
-  'GLD', 'IAU', 'SLV',
-  'ARKK', 'XLF', 'XLK', 'XLE', 'XLV', 'XLY', 'XLI',
+  // Region / country
+  'FXI', 'MCHI', 'ASHR', 'KWEB', 'EWZ', 'EWG', 'EWU', 'EWQ', 'EWA', 'EWS', 'EWT', 'EWH',
+  // Commodities / precious metals
+  'GLD', 'IAU', 'SLV', 'USO', 'DBC',
+  // Sector / theme — common ones a Thai retail investor on Dime/Schwab/Webull holds
+  'ARKK', 'ARKG', 'ARKF', 'ARKW', 'ARKQ',
+  'XLF', 'XLK', 'XLE', 'XLV', 'XLY', 'XLI', 'XLB', 'XLP', 'XLU', 'XLRE', 'XLC',
+  'SOXX', 'SMH', 'HACK', 'CIBR', 'CLOU', 'FINX',
+  'GRID', 'LIT', 'ICLN', 'TAN', 'BOTZ', 'ROBO', 'PBW', 'QCLN',
+  'XBI', 'IBB',
 ]);
 
 // Currency the holding is denominated in — usually a property of its class,

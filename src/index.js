@@ -2197,7 +2197,7 @@ async function confirmGoalFromWizard(ev, env, userId) {
 // on the schema default ('thai_equity'). Vision now tags new holdings at
 // insert time; this catches the legacy rows.
 async function ensureHoldingsClassified(env, userId) {
-  const key = `class-backfill-v3:${userId}`;
+  const key = `class-backfill-v4:${userId}`;
   if (await env.SESSION_KV.get(key)) return;
   const changed = await reclassifyHoldings(env, userId, inferAssetClass).catch(() => 0);
   await env.SESSION_KV.put(key, '1');

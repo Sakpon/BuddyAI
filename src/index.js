@@ -3172,25 +3172,79 @@ async function handleDcaLogAmountText(ev, env, userId, text, state) {
 // parses a transfer-slip / fund-purchase confirmation for the amount.
 async function handleDcaLogImage(ev, env, userId, messageId, state) {
   await showLoading(env, userId, 25);
-  let extracted;
+  let bytes, mimeType;
   try {
-    const { bytes, mimeType } = await fetchLineImage(env, messageId);
-    extracted = await extractDcaReceipt(env, bytes, mimeType);
+    ({ bytes, mimeType } = await fetchLineImage(env, messageId));
   } catch (err) {
-    console.error('dca receipt error', err);
-    await logEvent(env, userId, 'dca_log_image_failed', { error: String(err?.message || err).slice(0, 200) });
+    console.error('dca receipt fetch error', err);
+    await logEvent(env, userId, 'dca_log_image_failed', { stage: 'fetch', error: String(err?.message || err).slice(0, 200) });
     return push(env, userId, dcaLogInfoCard({
       tone: 'warning',
       title: 'อ่านภาพไม่สำเร็จ',
       subtitle: 'ลองส่งภาพที่คมชัดขึ้น หรือพิมพ์ตัวเลขเอง',
     }));
   }
+
+  // Try the single-slip receipt parser first (it's also been extended to
+  // sum multi-buy activity pages on its own — see DCA_RECEIPT_PROMPT).
+  let extracted;
+  try {
+    extracted = await extractDcaReceipt(env, bytes, mimeType);
+  } catch (err) {
+    console.error('dca receipt error', err);
+    extracted = { error: 'parse_failed' };
+  }
+
+  // If the receipt parser came back empty, fall back to the general
+  // portfolio/transactions extractor and sum the BUY rows ourselves.
+  // Common case: user uploads a broker "Activity" screenshot with many
+  // transactions rather than a single buy slip.
+  if (extracted?.error || extracted?.amount_thb == null) {
+    try {
+      const general = await extractFromImage(env, bytes, mimeType);
+      if (general?.kind === 'transactions' && Array.isArray(general.transactions)) {
+        const buys = general.transactions.filter(
+          (t) => String(t.side || '').toLowerCase() === 'buy' && (t.status === 'done' || t.status == null),
+        );
+        // Sum in THB. total_thb is preferred; fall back to qty × price
+        // (only valid when the broker reports THB natively — non-THB rows
+        // without total_thb get skipped to avoid silent FX mistakes).
+        let sumThb = 0;
+        let counted = 0;
+        let largest = null;
+        for (const b of buys) {
+          const t = Number(b.total_thb);
+          const q = Number(b.quantity);
+          const p = Number(b.price);
+          const v = Number.isFinite(t) && t > 0
+            ? t
+            : (Number.isFinite(q) && Number.isFinite(p) ? q * p : null);
+          if (v != null && v > 0) {
+            sumThb += v;
+            counted++;
+            if (!largest || v > largest.v) largest = { v, sym: b.symbol || null };
+          }
+        }
+        if (sumThb > 0) {
+          extracted = {
+            amount_thb: sumThb,
+            asset_class: largest?.sym ? inferAssetClass(largest.sym) : null,
+            symbol: largest?.sym || null,
+            description: counted > 1 ? `รวมยอดซื้อ ${counted} รายการ` : null,
+          };
+        }
+      }
+    } catch (err) {
+      console.error('dca transactions fallback error', err);
+    }
+  }
+
   if (extracted?.error || extracted?.amount_thb == null) {
     await logEvent(env, userId, 'dca_log_image_rejected', { reason: extracted?.error || 'no_amount' });
     return push(env, userId, dcaLogInfoCard({
       tone: 'warning',
       title: 'ไม่พบจำนวนเงินในภาพ',
-      subtitle: 'ภาพอาจไม่ใช่ slip โอนเงิน — ลองพิมพ์ตัวเลขเอง เช่น "30000"',
+      subtitle: 'ภาพอาจไม่ใช่ slip หรือรายการซื้อ — ลองพิมพ์ตัวเลขเอง เช่น "30000"',
     }));
   }
   const amt = Number(extracted.amount_thb);

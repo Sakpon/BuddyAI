@@ -300,10 +300,18 @@ export async function generateDailyNewsForHoldings(env, holdings, headlinesBySym
         'หุ้น/ETF ที่ผู้ใช้ถือ: ' + symbolList +
         headlinesBlock + '\n\n' +
         'ในฐานะ FinBot สรุปประเด็น ข่าว/ปัจจัยมหภาค/sector themes ที่อาจกระทบราคาในวันนี้ ' +
-        '(รายตัว — เลือกที่เด่นที่สุด 3-5 ตัวเท่านั้น ไม่จำเป็นต้องครบทุก symbol)\n\n' +
+        '(รายตัว — เลือกที่เด่นที่สุด 3-5 ตัวเท่านั้น ไม่จำเป็นต้องครบทุก symbol) ' +
+        'แล้วประเมิน "ภาพรวมพอร์ต" ออกมา 1 ก้อน — concentration risk, sector tilt, ' +
+        'ความเสี่ยงร่วมจากข่าวที่เห็น และคำแนะนำเชิงระมัดระวังว่าสมดุลพอร์ตควรไปทางไหน\n\n' +
         'ตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่น:\n' +
         '{\n' +
         '  "summary": "<1 ประโยคสรุปภาพรวมเช้านี้>",\n' +
+        '  "portfolio_view": {\n' +
+        '    "stance": "Balanced" | "Concentrated" | "Defensive" | "Aggressive",\n' +
+        '    "headline": "<1 บรรทัด ระบุประเด็นพอร์ตรวมเช้านี้>",\n' +
+        '    "rationale": "<2-3 ประโยค เชื่อม headlines + macro กับองค์ประกอบพอร์ต>",\n' +
+        '    "recommendation": "<1-2 ประโยค คำแนะนำเชิงระมัดระวังต่อพอร์ตรวม — เน้น rebalance / risk management ไม่ใช่ซื้อขายรายตัว>"\n' +
+        '  },\n' +
         '  "items": [\n' +
         '    {\n' +
         '      "symbol": "<symbol>",\n' +
@@ -316,12 +324,13 @@ export async function generateDailyNewsForHoldings(env, holdings, headlinesBySym
         '  ]\n' +
         '}\n\n' +
         'กฎ:\n' +
-        '- ภาษาไทย ยกเว้น action (Watch/Alert/Positive/Hold)\n' +
-        '- ห้ามให้คำสั่ง "ซื้อ/ขาย" — ใช้ "ติดตาม", "ทยอยลด", "ดูงบก่อน"\n' +
+        '- ภาษาไทย ยกเว้น action (Watch/Alert/Positive/Hold) และ stance (Balanced/Concentrated/Defensive/Aggressive)\n' +
+        '- ห้ามให้คำสั่ง "ซื้อ/ขาย" ตรงๆ — ใช้ "ติดตาม", "ทยอยลด", "ดูงบก่อน", "รักษาสัดส่วน", "เพิ่มน้ำหนัก defensive"\n' +
         '- ถ้ามี real headlines ด้านบน ให้ "from_real_headline": true และอิงเนื้อหา\n' +
         '- ถ้าไม่มี ให้ "from_real_headline": false และอิง sector/macro แทน\n' +
         '- 3-5 items, เลือกที่ "อาจส่งผลวันนี้" ที่สุด\n' +
-        '- ตอบสั้นกระชับ ไม่เกิน 1500 tokens\n' +
+        '- portfolio_view ต้องสะท้อนภาพรวมจริง — ถ้าพอร์ตกระจุก sector เดียวให้บอก, ถ้าหลายแนวก็พูดถึง balance\n' +
+        '- ตอบสั้นกระชับ ไม่เกิน 2500 tokens\n' +
         '\n' +
         'สไตล์ headline / summary / recommendation:\n' +
         '- headline: สั้นแบบหัวข่าวการเงิน ไม่เกิน 12-15 คำ — ขึ้นต้นด้วย symbol หรือ trigger\n' +
@@ -329,10 +338,20 @@ export async function generateDailyNewsForHoldings(env, holdings, headlinesBySym
         '  ✗ "หุ้น PTT มีปัจจัยบวกจากราคาน้ำมัน"\n' +
         '- summary: 1-2 ประโยค เน้นบริบทตัวเลข ไม่ใช่ข้อสรุปทั่วไป\n' +
         '- recommendation: สั้นเชิง action — "ติดตามงบ Q2 ที่จะออก", "ดูแนวรับ 35", "ยังถือต่อได้"\n' +
-        '  หลีกเลี่ยง: "ควรพิจารณาดำเนินการ", "ขอแนะนำให้ติดตามอย่างใกล้ชิด"',
+        '  หลีกเลี่ยง: "ควรพิจารณาดำเนินการ", "ขอแนะนำให้ติดตามอย่างใกล้ชิด"\n' +
+        '- portfolio_view.recommendation: เน้น risk-balance ไม่ใช่ pick — เช่น "พอร์ตหนัก US tech มาก ลองเพิ่ม defensive 10-15% เพื่อ hedge volatility", "กระจุกใน energy — ทยอยเพิ่ม global ETF เพื่อกระจาย sector"',
     },
   ];
-  const raw = await askClaude(prompt, env, { maxTokens: 2000 });
+  // Daily news now runs on Opus with adaptive thinking — quality justifies
+  // the spend since this is a single-shot per user per day, and the overall
+  // portfolio recommendation needs cross-holding reasoning that Haiku
+  // struggles with.
+  const raw = await askClaude(prompt, env, {
+    maxTokens: 3000,
+    model: modelDeep(env),
+    thinking: { type: 'adaptive' },
+    effort: 'medium',
+  });
   return parseJsonLoose(raw);
 }
 

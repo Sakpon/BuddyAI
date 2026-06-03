@@ -1856,6 +1856,8 @@ async function sendDailyNews(env) {
           portfolio_id: active.portfolio.id,
           summary: news.summary || null,
           real_headline_count: realHeadlineCount,
+          portfolio_stance: news.portfolio_view?.stance || null,
+          portfolio_headline: news.portfolio_view?.headline || null,
           items: (news.items || []).map((it) => ({
             symbol: it.symbol,
             action: it.action,

@@ -2,8 +2,11 @@ name: Daily portfolio news
 
 on:
   schedule:
-    # 01:00 UTC = 08:00 Asia/Bangkok, Mon-Fri
-    - cron: '0 1 * * 1-5'
+    # 22:00 UTC = 05:00 Asia/Bangkok the next day, Sun-Thu → Mon-Fri morning.
+    # Scheduled early to absorb GitHub Actions cron drift (free-tier delays
+    # are commonly 30 min, occasionally a few hours). Even with a worst-case
+    # 3h delay, the news still lands by ~08:00 BKK.
+    - cron: '0 22 * * 0-4'
   workflow_dispatch:
 
 permissions:

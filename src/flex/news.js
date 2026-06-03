@@ -5,8 +5,16 @@ const ACTION_TONE = {
   Alert:    { color: '#DC2626', label: 'แจ้งเตือน' },
 };
 
+const STANCE_TONE = {
+  Balanced:     { color: '#16A34A', label: 'สมดุล' },
+  Concentrated: { color: '#D97706', label: 'กระจุก' },
+  Defensive:    { color: '#0EA5E9', label: 'ระมัดระวัง' },
+  Aggressive:   { color: '#DC2626', label: 'เชิงรุก' },
+};
+
 export function dailyNewsCard({ date, news, portfolioName }) {
   const items = (news?.items || []).slice(0, 5);
+  const view = news?.portfolio_view || null;
   const body = [];
 
   if (news?.summary) {
@@ -17,6 +25,13 @@ export function dailyNewsCard({ date, news, portfolioName }) {
       size: 'sm',
       color: '#0F172A',
     });
+  }
+
+  // Overall portfolio recommendation — sits above the per-symbol items so
+  // the user sees the cross-holding stance first.
+  if (view && (view.headline || view.recommendation)) {
+    body.push({ type: 'separator', margin: 'md' });
+    body.push(portfolioViewBlock(view));
   }
 
   for (const it of items) {
@@ -70,6 +85,47 @@ export function dailyNewsCard({ date, news, portfolioName }) {
         ],
       },
     },
+  };
+}
+
+function portfolioViewBlock(view) {
+  const tone = STANCE_TONE[view.stance] || STANCE_TONE.Balanced;
+  const rows = [
+    {
+      type: 'box',
+      layout: 'horizontal',
+      contents: [
+        { type: 'text', text: '🔭 ภาพรวมพอร์ต', size: 'sm', weight: 'bold', color: '#0F172A', flex: 5 },
+        { type: 'text', text: tone.label, size: 'xs', weight: 'bold', color: tone.color, align: 'end', flex: 3 },
+      ],
+    },
+  ];
+  if (view.headline) {
+    rows.push({ type: 'text', text: view.headline, wrap: true, size: 'sm', weight: 'bold', color: '#0F172A' });
+  }
+  if (view.rationale) {
+    rows.push({ type: 'text', text: view.rationale, wrap: true, size: 'xs', color: '#475569' });
+  }
+  if (view.recommendation) {
+    rows.push({
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: tone.color + '14',
+      paddingAll: '10px',
+      cornerRadius: '6px',
+      margin: 'sm',
+      contents: [
+        { type: 'text', text: 'คำแนะนำพอร์ตรวม', size: 'xxs', weight: 'bold', color: tone.color },
+        { type: 'text', text: view.recommendation, wrap: true, size: 'xs', color: '#1E293B' },
+      ],
+    });
+  }
+  return {
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'xs',
+    margin: 'sm',
+    contents: rows,
   };
 }
 

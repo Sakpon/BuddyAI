@@ -275,9 +275,37 @@ export async function generatePortfolioRebalance(env, portfolio, holdings) {
 
 export async function generateDailyNewsForHoldings(env, holdings, headlinesBySymbol) {
   if (!holdings || !holdings.length) return null;
+
+  // Two-call pipeline:
+  //   1. Sonnet aggregates the per-symbol news (summary + items[]) — fast +
+  //      relatively cheap, this is the bulk of the content.
+  //   2. Opus reasons across all holdings + the items the first call
+  //      produced to write the portfolio_view recommendation — the slow,
+  //      expensive cross-holding analysis only runs on the structured
+  //      output, not on raw headlines.
+  // If step 2 fails or times out we still return the step-1 result so the
+  // user gets the per-symbol news even when the recommendation is missing.
+
+  const items = await generateNewsItems(env, holdings, headlinesBySymbol);
+  if (!items) return null;
+
+  let portfolioView = null;
+  try {
+    portfolioView = await generatePortfolioRecommendation(env, holdings, items);
+  } catch (err) {
+    console.error('portfolio recommendation failed', err);
+  }
+
+  return portfolioView ? { ...items, portfolio_view: portfolioView } : items;
+}
+
+// Sonnet pass — aggregates Yahoo headlines + sector/macro context into a
+// per-symbol news list. Cost-sensitive: this runs once per subscribed user
+// per day and the content here drives both the card body and the input to
+// the Opus recommendation step below.
+async function generateNewsItems(env, holdings, headlinesBySymbol) {
   const symbolList = holdings.map((h) => h.symbol).filter(Boolean).slice(0, 12).join(', ');
 
-  // Build a real-headlines context block if the caller fetched any.
   const headlineLines = [];
   if (headlinesBySymbol && typeof headlinesBySymbol === 'object') {
     for (const [sym, items] of Object.entries(headlinesBySymbol)) {
@@ -332,7 +360,65 @@ export async function generateDailyNewsForHoldings(env, holdings, headlinesBySym
         '  หลีกเลี่ยง: "ควรพิจารณาดำเนินการ", "ขอแนะนำให้ติดตามอย่างใกล้ชิด"',
     },
   ];
-  const raw = await askClaude(prompt, env, { maxTokens: 2000 });
+  const raw = await askClaude(prompt, env, {
+    maxTokens: 2000,
+    model: modelBalanced(env),
+  });
+  return parseJsonLoose(raw);
+}
+
+// Opus pass — reads the Sonnet output + the holdings list and writes ONE
+// cross-holding recommendation. Adaptive thinking is on because the value
+// here is the reasoning step (concentration risk, sector tilt, correlated
+// downside from the day's headlines).
+async function generatePortfolioRecommendation(env, holdings, newsItems) {
+  // Compact holdings context: symbol + market_value if we have it. Enough
+  // for Opus to spot concentration without paying for full row dumps.
+  const holdingLines = holdings
+    .filter((h) => h?.symbol)
+    .slice(0, 20)
+    .map((h) => {
+      const v = h.market_value != null ? Number(h.market_value)
+        : (h.quantity != null && h.market_price != null ? Number(h.quantity) * Number(h.market_price) : null);
+      return v != null
+        ? `- ${String(h.symbol).toUpperCase()}: ~${Math.round(v).toLocaleString('en-US')}`
+        : `- ${String(h.symbol).toUpperCase()}`;
+    })
+    .join('\n');
+
+  const itemLines = (newsItems?.items || []).slice(0, 5).map((it) => {
+    return `- [${it.symbol || '?'}/${it.action || 'Watch'}] ${(it.headline || '').slice(0, 140)}`;
+  }).join('\n');
+
+  const prompt = [
+    {
+      role: 'user',
+      content:
+        'พอร์ตของผู้ใช้ (มูลค่าหน่วยเดิมของแต่ละตัว):\n' + (holdingLines || '(empty)') + '\n\n' +
+        'ประเด็นข่าวเช้านี้ (รายตัว):\n' + (itemLines || '(no items)') + '\n\n' +
+        'สรุปภาพรวม:\n' + (newsItems?.summary || '(no summary)') + '\n\n' +
+        'หน้าที่: ประเมิน "ภาพรวมพอร์ต" ออกมา 1 ก้อน — concentration risk, sector tilt, ' +
+        'ความเสี่ยงร่วมจากข่าวที่เห็น และคำแนะนำเชิงระมัดระวังว่าสมดุลพอร์ตควรไปทางไหน\n\n' +
+        'ตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่น:\n' +
+        '{\n' +
+        '  "stance": "Balanced" | "Concentrated" | "Defensive" | "Aggressive",\n' +
+        '  "headline": "<1 บรรทัด ระบุประเด็นพอร์ตรวมเช้านี้>",\n' +
+        '  "rationale": "<2-3 ประโยค เชื่อม headlines + macro กับองค์ประกอบพอร์ต>",\n' +
+        '  "recommendation": "<1-2 ประโยค คำแนะนำเชิงระมัดระวังต่อพอร์ตรวม — เน้น rebalance / risk management ไม่ใช่ซื้อขายรายตัว>"\n' +
+        '}\n\n' +
+        'กฎ:\n' +
+        '- ภาษาไทย ยกเว้น stance (Balanced/Concentrated/Defensive/Aggressive)\n' +
+        '- ห้ามให้คำสั่ง "ซื้อ/ขาย" ตรงๆ — ใช้ "ทยอยลด", "เพิ่มน้ำหนัก defensive", "รักษาสัดส่วน", "กระจาย sector"\n' +
+        '- ต้องสะท้อนภาพรวมจริง — ถ้าพอร์ตกระจุก sector เดียวให้บอก, ถ้าหลายแนวก็พูดถึง balance\n' +
+        '- recommendation เน้น risk-balance ไม่ใช่ pick — เช่น "พอร์ตหนัก US tech มาก ลองเพิ่ม defensive 10-15% เพื่อ hedge volatility", "กระจุกใน energy — ทยอยเพิ่ม global ETF เพื่อกระจาย sector"',
+    },
+  ];
+  const raw = await askClaude(prompt, env, {
+    maxTokens: 1200,
+    model: modelDeep(env),
+    thinking: { type: 'adaptive' },
+    effort: 'medium',
+  });
   return parseJsonLoose(raw);
 }
 

@@ -149,6 +149,7 @@ import { weeklyStatusCard } from './flex/weeklyStatus.js';
 import { dividendConfirmCard, dividendsListCard } from './flex/dividends.js';
 import { aiExplainerCard, topicCard, topicListCard } from './flex/education.js';
 import { findTopic, listTopicsByCategory } from './education/topics.js';
+import { recordEntryCard } from './flex/recordEntry.js';
 import { adminPage } from './admin/page.js';
 import {
   adminApiCronLogs,
@@ -181,6 +182,7 @@ const HELP_TH = [
   '• "พอร์ตทั้งหมด" — รายการพอร์ตทั้งหมด เลือก/ลบได้',
   '• "เปลี่ยนชื่อ <ชื่อใหม่>" — เปลี่ยนชื่อพอร์ตที่ใช้งานอยู่',
   '• "สถานะหุ้น" — ราคาล่าสุด + คำแนะนำรายตัว',
+  '• "บันทึก" — หน้ารวมวิธีบันทึกซื้อ-ขาย (ส่งภาพหรือพิมพ์เอง)',
   '• "ซื้อ <SYMBOL> <จำนวน> @ <ราคา>" — บันทึกการซื้อหุ้น (เช่น ซื้อ PTT 100 @ 35.50)',
   '• "ขาย <SYMBOL> <จำนวน> @ <ราคา>" — บันทึกการขายหุ้น',
   '• "รายการซื้อขาย" — ดูประวัติการซื้อขายของพอร์ต',
@@ -1054,6 +1056,10 @@ async function handleText(ev, env, userId, text) {
   if (cmd === 'list-transactions') {
     return showTransactions(ev, env, userId);
   }
+  if (cmd === 'record-entry') {
+    await logEvent(env, userId, 'record_entry_viewed', null);
+    return reply(env, ev.replyToken, recordEntryCard());
+  }
   if (cmd === 'diary') {
     return showTradingDiary(ev, env, userId, match.arg);
   }
@@ -1591,6 +1597,10 @@ function matchCommand(text) {
   if (['ล้างพอร์ต', 'clear portfolio'].includes(tl)) return { cmd: 'clear-portfolio' };
   if (['รายการซื้อขาย', 'ประวัติซื้อขาย', 'transactions', 'tx'].includes(tl))
     return { cmd: 'list-transactions' };
+
+  // Unified entry hub — shows both paths (screenshot vs manual typing).
+  if (['บันทึก', 'บันทึกการซื้อขาย', 'บันทึกรายการ', 'record', 'new transaction', 'add transaction'].includes(tl))
+    return { cmd: 'record-entry' };
 
   // Trading diary — three forms:
   //   ไดอารี่              (active portfolio, all-time)
